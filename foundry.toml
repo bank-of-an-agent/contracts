@@ -1,0 +1,91 @@
+# Agent Bank contracts — Foundry configuration.
+#
+# Profiles:
+#   default  local development: unit, fuzz and invariant tests (fork tests excluded)
+#   ci       same suites with many more fuzz/invariant runs (FOUNDRY_PROFILE=ci)
+#   fork     only the Base Sepolia fork spike tests (FOUNDRY_PROFILE=fork)
+#
+# Bytecode determinism: CREATE2 addresses depend on the exact init code, so the compiler
+# version, EVM version, optimizer settings and metadata settings below are part of the
+# deployment contract. Do not change them without re-deriving every address.
+
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+cache_path = "cache"
+
+solc_version = "0.8.30"
+auto_detect_solc = false
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 10_000
+via_ir = false
+# No CBOR metadata / IPFS hash: bytecode depends only on the compiled code, not on comments or paths.
+bytecode_hash = "none"
+cbor_metadata = false
+
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+]
+
+# The deploy script records addresses here. Nothing else may touch the filesystem.
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
+
+# Fork tests need network access; they run under the `fork` profile only.
+no_match_path = "test/**/*.fork.t.sol"
+
+gas_reports = ["AgentEscrow", "PaymentStreams", "AgentPolicyHook", "TimeLockVaults", "SweepExecutor"]
+
+[profile.default.fuzz]
+runs = 1_000
+max_test_rejects = 262_144
+
+[profile.default.invariant]
+runs = 256
+depth = 100
+fail_on_revert = false
+call_override = false
+shrink_run_limit = 5_000
+
+[profile.ci]
+# Inherits everything from `default`; only the run counts change.
+
+[profile.ci.fuzz]
+runs = 10_000
+max_test_rejects = 1_048_576
+
+[profile.ci.invariant]
+runs = 1_000
+depth = 200
+fail_on_revert = false
+shrink_run_limit = 5_000
+
+[profile.fork]
+match_path = "test/spike/*.fork.t.sol"
+no_match_path = "test/__none__/**"
+
+[profile.fork.fuzz]
+runs = 64
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = false
+int_types = "long"
+multiline_func_header = "attributes_first"
+quote_style = "double"
+number_underscore = "thousands"
+sort_imports = true
+wrap_comments = false
+override_spacing = false
+contract_new_lines = false
+single_line_statement_blocks = "preserve"
+
+[rpc_endpoints]
+# Public endpoint (not a secret). Override per command with --rpc-url / BASE_SEPOLIA_RPC_URL.
+base_sepolia = "https://sepolia.base.org"
+anvil = "http://127.0.0.1:8545"
