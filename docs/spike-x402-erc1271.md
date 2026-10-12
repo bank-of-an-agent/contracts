@@ -6,7 +6,7 @@
 | Question | Does an x402 `exact` payment (EIP-3009 `transferWithAuthorization`) signed by a Safe smart account through ERC-1271 settle with Base Sepolia USDC? And does the on-chain spending cap still hold on that path? |
 | Answer | **It settles.** A deployed Safe can pay through either USDC overload. **But the on-chain hard cap does not hold on this path**, and an undeployed (counterfactual) Safe cannot pay. |
 | Decision | Use a per-agent EOA **spend key** holding a small USDC float, refilled by the smart account under policy: [ADR 0001](adr/0001-x402-spend-key-float.md) |
-| Test | [`test/spike/X402SafeErc1271.fork.t.sol`](../test/spike/X402SafeErc1271.fork.t.sol) (14 tests, all passing) |
+| Tests | [`test/spike/X402SafeErc1271.fork.t.sol`](../test/spike/X402SafeErc1271.fork.t.sol) (Base Sepolia fork, 14 tests); local companions [`Erc1271SpendCapBypass.t.sol`](../test/spike/Erc1271SpendCapBypass.t.sol) (4) and [`SpendKeyFloat.t.sol`](../test/spike/SpendKeyFloat.t.sol) (5). All pass. |
 
 ## 1. Method
 
@@ -97,6 +97,14 @@ Design principle 2 is "limits live in code, not prompts". The design also requir
 
 Consequence: any key that can make the account return `0x1626ba7e` for an arbitrary digest can sign away the **entire balance**. This includes a session key whose scope enables ERC-1271 signing, and a co-signer working together with such a key. The same holds for an EIP-2612 `permit` to an attacker-chosen spender, which is a persistent allowance and worse than a single transfer. USDC's per-authorizer nonces stop *replay*, not *amount*.
 
+**Local reproduction with this repository's own hook.** [`Erc1271SpendCapBypass.t.sol`](../test/spike/Erc1271SpendCapBypass.t.sol) runs against MockUSDC, which has FiatToken's EIP-3009 and EIP-2612 semantics. An agent account runs `AgentPolicyHook` with these settings: 25 USDC per transaction, 200 USDC per day, recipient allowlist on.
+
+- On the execution path, the session key is capped. A transfer to a non-allowlisted address reverts with `RecipientNotAllowed`. A transfer of 10,000 USDC reverts with `PerTxLimitExceeded`.
+- Once the account accepts that key's ERC-1271 signatures, two things go through and the hook records **0** spend:
+  - an EIP-3009 authorization moves the **entire 10,000 USDC** to the attacker;
+  - an EIP-2612 permit gives the attacker an unlimited allowance.
+- Removing the key's ERC-1271 rights makes USDC reject the same signatures with `FiatTokenV2: invalid signature`.
+
 The only bound left on this path is the off-chain co-signer's policy check. That is exactly the bound the design says must not be the last line of defence. **The spike therefore fails the security requirement** even though it passes the mechanical one. By the design doc's rule, this "forces the fallback design".
 
 ### 3.3 Alternatives considered
@@ -118,6 +126,14 @@ Adopt **Option D**. Requirements that follow from the spike:
 4. **Float recovery.** At provisioning, the spend key signs an EIP-2612 `permit` that gives the parent account an allowance. The owner's exit tool can then sweep a float back with `transferFrom(spendKey → account)` without the agent runtime. `AgentPolicyHook` classifies that pull as an inflow.
 5. **Deployment.** Deploy agent accounts before first use. Ideally do it at account creation, sponsored by the paymaster. This matters for any future smart-account-signed flows. The spend-key design itself is unaffected.
 6. **Ledger and indexer.** Model the spend key as part of the agent's account set (for example `pocket:x402-float`). A refill is an internal movement. Each x402 payment is reconciled from the spend key's USDC `Transfer` and `AuthorizationUsed` events.
+
+**Reference flow.** [`SpendKeyFloat.t.sol`](../test/spike/SpendKeyFloat.t.sol) exercises Option D end to end with this repository's contracts:
+
+- **Standard payment.** The spend key signs an EIP-3009 authorization; the facilitator settles it through the `(v,r,s)` overload.
+- **Refill caps.** Refills pass the on-chain cap of 25 USDC per transaction and 100 USDC per day. The fifth refill of the day reverts with `DailyLimitExceeded`, so daily x402 spend is bounded on-chain.
+- **Refill recipient.** A refill can only go to the spend key.
+- **Leaked key.** A leaked spend key loses exactly its float. It cannot sign for the account and has no allowance from it.
+- **Recovery.** The owner sweeps the float back through the provisioning-time permit allowance, without the agent.
 
 ## 5. Open questions for human sign-off
 

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-11
 - **Deciders:** Agent Bank core team (Phase 0 gate)
-- **Evidence:** [Spike report](../spike-x402-erc1271.md), [`test/spike/X402SafeErc1271.fork.t.sol`](../../test/spike/X402SafeErc1271.fork.t.sol)
+- **Evidence:** [Spike report](../spike-x402-erc1271.md), [`test/spike/X402SafeErc1271.fork.t.sol`](../../test/spike/X402SafeErc1271.fork.t.sol) (Base Sepolia fork), [`test/spike/Erc1271SpendCapBypass.t.sol`](../../test/spike/Erc1271SpendCapBypass.t.sol) (the bypass, reproduced against `AgentPolicyHook`), [`test/spike/SpendKeyFloat.t.sol`](../../test/spike/SpendKeyFloat.t.sol) (this decision, end to end)
 
 ## Context
 
