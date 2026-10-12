@@ -264,6 +264,77 @@ contract MockUSDCTest is BaseTest {
         usdc.permit(alice.addr, bob, 1, deadline, late);
     }
 
+    // ------------------------------------------------------------------ FiatToken allowance API
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    function test_increaseAndDecreaseAllowance() public {
+        vm.startPrank(alice.addr);
+        vm.expectEmit(true, true, false, true, address(usdc));
+        emit Approval(alice.addr, bob, 5e6);
+        assertTrue(usdc.increaseAllowance(bob, 5e6));
+        assertTrue(usdc.increaseAllowance(bob, 2e6));
+        assertEq(usdc.allowance(alice.addr, bob), 7e6);
+
+        assertTrue(usdc.decreaseAllowance(bob, 3e6));
+        assertEq(usdc.allowance(alice.addr, bob), 4e6);
+        vm.expectRevert(bytes("ERC20: decreased allowance below zero"));
+        usdc.decreaseAllowance(bob, 4e6 + 1);
+        assertTrue(usdc.decreaseAllowance(bob, 4e6));
+        assertEq(usdc.allowance(alice.addr, bob), 0);
+
+        usdc.approve(bob, type(uint256).max);
+        vm.expectRevert(bytes("SafeMath: addition overflow"));
+        usdc.increaseAllowance(bob, 1);
+        vm.stopPrank();
+    }
+
+    function test_allowanceApi_respectsBlacklist() public {
+        usdc.blacklist(bob);
+        vm.startPrank(alice.addr);
+        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
+        usdc.approve(bob, 1);
+        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
+        usdc.increaseAllowance(bob, 1);
+        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
+        usdc.decreaseAllowance(bob, 0);
+        vm.stopPrank();
+
+        // a blacklisted spender cannot use an allowance it already holds, and a blacklisted owner cannot approve
+        usdc.unBlacklist(bob);
+        vm.prank(alice.addr);
+        usdc.approve(bob, 10);
+        usdc.blacklist(bob);
+        vm.prank(bob);
+        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
+        usdc.transferFrom(alice.addr, relayer, 1);
+        usdc.unBlacklist(bob);
+        usdc.blacklist(alice.addr);
+        vm.prank(alice.addr);
+        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
+        usdc.increaseAllowance(bob, 1);
+    }
+
+    function test_permit_respectsBlacklist() public {
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory sig = _sign(alice.privateKey, _permitDigest(alice.addr, bob, 1, 0, deadline));
+        usdc.blacklist(bob);
+        vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
+        usdc.permit(alice.addr, bob, 1, deadline, sig);
+    }
+
+    function testFuzz_increaseThenDecrease_roundTrips(uint256 start, uint256 delta) public {
+        start = bound(start, 0, type(uint128).max);
+        delta = bound(delta, 0, type(uint128).max);
+        vm.startPrank(alice.addr);
+        usdc.approve(bob, start);
+        usdc.increaseAllowance(bob, delta);
+        assertEq(usdc.allowance(alice.addr, bob), start + delta);
+        usdc.decreaseAllowance(bob, delta);
+        assertEq(usdc.allowance(alice.addr, bob), start);
+        vm.stopPrank();
+    }
+
     // ------------------------------------------------------------------ blacklist
 
     function test_blacklist() public {

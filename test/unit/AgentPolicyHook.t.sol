@@ -457,17 +457,12 @@ contract AgentPolicyHookTest is BaseTest {
         _ownerExec(address(usdc), 0, abi.encodeCall(IERC20.approve, (attacker, 1000)));
         _exec(address(usdc), 0, abi.encodeCall(IERC20.approve, (attacker, 0)));
         assertEq(usdc.allowance(address(account), attacker), 0);
-        // MockUSDC (OZ v5) lacks these FiatToken functions, so run them in try-mode: only the hook's verdict matters.
-        vm.startPrank(entryPoint);
-        account.execute(
-            _mode(CALLTYPE_SINGLE, EXECTYPE_TRY),
-            _single(address(usdc), 0, abi.encodeWithSelector(DECREASE_ALLOWANCE, attacker, 5))
-        );
-        account.execute(
-            _mode(CALLTYPE_SINGLE, EXECTYPE_TRY),
-            _single(address(usdc), 0, abi.encodeWithSelector(INCREASE_ALLOWANCE, attacker, 0))
-        );
-        vm.stopPrank();
+        // re-grant through the owner path, then shrink it through the agent path
+        _ownerExec(address(usdc), 0, abi.encodeCall(IERC20.approve, (attacker, 1000)));
+        _exec(address(usdc), 0, abi.encodeWithSelector(DECREASE_ALLOWANCE, attacker, 400));
+        assertEq(usdc.allowance(address(account), attacker), 600);
+        _exec(address(usdc), 0, abi.encodeWithSelector(INCREASE_ALLOWANCE, attacker, 0));
+        assertEq(usdc.allowance(address(account), attacker), 600);
         assertEq(hook.spentToday(address(account), address(usdc)), 0);
     }
 
@@ -477,13 +472,10 @@ contract AgentPolicyHookTest is BaseTest {
         account.execute(
             _singleMode(), _single(address(usdc), 0, abi.encodeWithSelector(INCREASE_ALLOWANCE, attacker, 1))
         );
-        // MockUSDC has no increaseAllowance: try-mode lets the (failing) call through so we can observe accounting
-        vm.prank(entryPoint);
-        account.execute(
-            _mode(CALLTYPE_SINGLE, EXECTYPE_TRY),
-            _single(address(usdc), 0, abi.encodeWithSelector(INCREASE_ALLOWANCE, address(escrow), 7))
-        );
-        assertEq(hook.spentToday(address(account), address(usdc)), 7);
+        _exec(address(usdc), 0, abi.encodeWithSelector(INCREASE_ALLOWANCE, address(escrow), 7));
+        _exec(address(usdc), 0, abi.encodeWithSelector(INCREASE_ALLOWANCE, address(escrow), 5));
+        assertEq(usdc.allowance(address(account), address(escrow)), 12);
+        assertEq(hook.spentToday(address(account), address(usdc)), 12, "every increase counts against the caps");
     }
 
     function test_transferFrom_intoAccountIsInflow_outwardIsCapped() public {

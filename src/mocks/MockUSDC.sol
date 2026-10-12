@@ -12,8 +12,10 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 ///         - EIP-3009 `transferWithAuthorization` / `receiveWithAuthorization` / `cancelAuthorization`, each in the
 ///           `(v, r, s)` and the `bytes signature` (ERC-1271 capable, via SignatureChecker) variants;
 ///         - EIP-2612 `permit` in both variants;
+///         - FiatToken v2 `increaseAllowance` / `decreaseAllowance`;
 ///         - FiatToken revert strings for authorization failures (x402 facilitators match on them);
-///         - a blacklist (controlled by `blacklister`) to exercise "USDC froze an address" liveness paths.
+///         - a blacklist (controlled by `blacklister`) to exercise "USDC froze an address" liveness paths. As in
+///           FiatToken, blacklisted addresses can neither send, receive, approve, be approved, nor call `transferFrom`.
 ///         `mint` is open to anyone: it is a faucet for tests. Never deploy outside a local chain.
 contract MockUSDC is ERC20, EIP712 {
     /// @notice keccak256("TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)")
@@ -95,6 +97,50 @@ contract MockUSDC is ERC20, EIP712 {
         require(msg.sender == blacklister, "Blacklistable: caller is not the blacklister");
         _blacklisted[account] = false;
         emit UnBlacklisted(account);
+    }
+
+    // ------------------------------------------------------------------ FiatToken allowance API
+
+    /// @notice Sets `spender`'s allowance (FiatToken: neither party may be blacklisted).
+    /// @param spender Spender.
+    /// @param value New allowance.
+    function approve(address spender, uint256 value) public override returns (bool) {
+        _requireNotBlacklisted(msg.sender);
+        _requireNotBlacklisted(spender);
+        return super.approve(spender, value);
+    }
+
+    /// @notice Transfers on behalf of `from` (FiatToken: the caller may not be blacklisted either).
+    /// @param from Token owner.
+    /// @param to Recipient.
+    /// @param value Amount.
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        _requireNotBlacklisted(msg.sender);
+        return super.transferFrom(from, to, value);
+    }
+
+    /// @notice Increases `spender`'s allowance by `increment` (FiatToken v2 semantics).
+    /// @param spender Spender.
+    /// @param increment Amount to add.
+    function increaseAllowance(address spender, uint256 increment) external returns (bool) {
+        _requireNotBlacklisted(msg.sender);
+        _requireNotBlacklisted(spender);
+        uint256 current = allowance(msg.sender, spender);
+        require(increment <= type(uint256).max - current, "SafeMath: addition overflow");
+        _approve(msg.sender, spender, current + increment);
+        return true;
+    }
+
+    /// @notice Decreases `spender`'s allowance by `decrement`; reverts below zero (FiatToken v2 semantics).
+    /// @param spender Spender.
+    /// @param decrement Amount to subtract.
+    function decreaseAllowance(address spender, uint256 decrement) external returns (bool) {
+        _requireNotBlacklisted(msg.sender);
+        _requireNotBlacklisted(spender);
+        uint256 current = allowance(msg.sender, spender);
+        require(decrement <= current, "ERC20: decreased allowance below zero");
+        _approve(msg.sender, spender, current - decrement);
+        return true;
     }
 
     // ------------------------------------------------------------------ EIP-3009
@@ -223,6 +269,10 @@ contract MockUSDC is ERC20, EIP712 {
         super._update(from, to, value);
     }
 
+    function _requireNotBlacklisted(address account) private view {
+        require(!_blacklisted[account], "Blacklistable: account is blacklisted");
+    }
+
     function _transferWithAuthorization(
         bytes32 typeHash,
         address from,
@@ -262,6 +312,8 @@ contract MockUSDC is ERC20, EIP712 {
     }
 
     function _permit(address owner, address spender, uint256 value, uint256 deadline, bytes memory signature) private {
+        _requireNotBlacklisted(owner);
+        _requireNotBlacklisted(spender);
         require(deadline >= block.timestamp, "FiatTokenV2: permit is expired");
         bytes32 structHash =
             keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, _permitNonces[owner]++, deadline));
