@@ -7,11 +7,11 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 
 /// @title MockTreasuryFund
 /// @notice TEST/ANVIL ONLY. A synchronous ERC-4626 "tokenized treasury fund" over MockUSDC. Yield is simulated by
-///         minting the asset to the fund. The deployer may set a global deposit cap to exercise `maxDeposit` limits.
+///         minting the asset to the fund. The admin may set a global deposit cap to exercise `maxDeposit` limits.
 ///         Real treasury funds (BENJI, USDY, BUIDL, …) have KYC gates and asynchronous settlement; this mock has
 ///         neither.
 contract MockTreasuryFund is ERC4626 {
-    /// @notice Deployer; may change the deposit cap.
+    /// @notice May change the deposit cap.
     address public immutable admin;
     /// @notice Maximum total assets the fund accepts (0 = unlimited).
     uint256 public depositCap;
@@ -20,8 +20,10 @@ contract MockTreasuryFund is ERC4626 {
     event DepositCapSet(uint256 depositCap);
 
     /// @param asset_ Underlying asset (MockUSDC).
-    constructor(IERC20 asset_) ERC20("Mock Treasury Fund", "mTBILL") ERC4626(asset_) {
-        admin = msg.sender;
+    /// @param admin_ Address that may change the deposit cap (explicit so CREATE2-factory deploys keep it).
+    // forge-lint: disable-next-line(missing-zero-check)
+    constructor(IERC20 asset_, address admin_) ERC20("Mock Treasury Fund", "mTBILL") ERC4626(asset_) {
+        admin = admin_;
     }
 
     /// @notice Sets the global deposit cap (0 = unlimited). Admin only.

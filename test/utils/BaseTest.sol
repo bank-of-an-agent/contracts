@@ -25,7 +25,7 @@ abstract contract BaseTest is Test {
 
     function setUp() public virtual {
         vm.warp(T0);
-        usdc = new MockUSDC();
+        usdc = new MockUSDC(address(this));
         vm.label(address(usdc), "USDC");
     }
 

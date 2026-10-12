@@ -29,7 +29,7 @@ contract SweepExecutorTest is BaseTest {
     function setUp() public override {
         super.setUp();
         sweeper = new SweepExecutor();
-        fund = new MockTreasuryFund(IERC20(address(usdc)));
+        fund = new MockTreasuryFund(IERC20(address(usdc)), address(this));
         treasury = new MockERC7579Account(entryPoint, principal);
         _install(_config(address(fund), FLOOR, THRESHOLD, MAX_BPS));
     }
@@ -102,7 +102,7 @@ contract SweepExecutorTest is BaseTest {
         sweeper.setConfig(_config(address(sweeper), 1, 1, 1));
 
         TestToken other = new TestToken("Other", "OTH");
-        MockTreasuryFund otherFund = new MockTreasuryFund(IERC20(address(other)));
+        MockTreasuryFund otherFund = new MockTreasuryFund(IERC20(address(other)), address(this));
         vm.expectRevert(abi.encodeWithSelector(ISweepExecutor.AssetMismatch.selector, address(other), address(usdc)));
         sweeper.setConfig(_config(address(otherFund), 1, 1, 1));
         vm.expectRevert(abi.encodeWithSelector(ISweepExecutor.InvalidMaxSavingsBps.selector, 10_001));
@@ -228,7 +228,7 @@ contract SweepExecutorTest is BaseTest {
     /// @notice Donation/inflation setup: an attacker inflates the share price of an empty fund so a sweep would mint
     ///         shares worth far less than the assets paid. The sweep refuses instead of losing value.
     function test_sweep_refusesInflatedEmptyFund() public {
-        MockTreasuryFund fresh = new MockTreasuryFund(IERC20(address(usdc)));
+        MockTreasuryFund fresh = new MockTreasuryFund(IERC20(address(usdc)), address(this));
         _setConfig(_config(address(fresh), FLOOR, THRESHOLD, MAX_BPS));
         address attacker = makeAddr("attacker");
         _fund(attacker, 1500 * USDC_UNIT + 1);

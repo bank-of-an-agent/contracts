@@ -121,7 +121,7 @@ contract SweepExecutorInvariantTest is BaseTest {
     function setUp() public override {
         super.setUp();
         sweeper = new SweepExecutor();
-        fund = new MockTreasuryFund(IERC20(address(usdc)));
+        fund = new MockTreasuryFund(IERC20(address(usdc)), address(this));
         treasury = new MockERC7579Account(entryPoint, makeAddr("inv.principal"));
         ISweepExecutor.SweepConfig memory c = ISweepExecutor.SweepConfig({
             fund: address(fund), asset: address(usdc), maxSavingsBps: 8000, liquidFloor: 1000e6, sweepThreshold: 100e6

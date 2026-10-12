@@ -331,7 +331,7 @@ contract MockTreasuryFundTest is BaseTest {
 
     function setUp() public override {
         super.setUp();
-        fund = new MockTreasuryFund(IERC20(address(usdc)));
+        fund = new MockTreasuryFund(IERC20(address(usdc)), address(this));
         usdc.mint(payer, 1_000_000e6);
         vm.prank(payer);
         usdc.approve(address(fund), type(uint256).max);

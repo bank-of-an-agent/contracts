@@ -13,7 +13,7 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 ///           `(v, r, s)` and the `bytes signature` (ERC-1271 capable, via SignatureChecker) variants;
 ///         - EIP-2612 `permit` in both variants;
 ///         - FiatToken revert strings for authorization failures (x402 facilitators match on them);
-///         - a blacklist (controlled by the deployer) to exercise "USDC froze an address" liveness paths.
+///         - a blacklist (controlled by `blacklister`) to exercise "USDC froze an address" liveness paths.
 ///         `mint` is open to anyone: it is a faucet for tests. Never deploy outside a local chain.
 contract MockUSDC is ERC20, EIP712 {
     /// @notice keccak256("TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)")
@@ -28,7 +28,7 @@ contract MockUSDC is ERC20, EIP712 {
     /// @notice keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
     bytes32 public constant PERMIT_TYPEHASH = 0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9;
 
-    /// @notice Address allowed to (un)blacklist accounts (the deployer).
+    /// @notice Address allowed to (un)blacklist accounts.
     address public immutable blacklister;
 
     mapping(address authorizer => mapping(bytes32 nonce => bool)) private _authorizationStates;
@@ -44,8 +44,10 @@ contract MockUSDC is ERC20, EIP712 {
     /// @notice `account` was removed from the blacklist.
     event UnBlacklisted(address indexed account);
 
-    constructor() ERC20("USDC", "USDC") EIP712("USDC", "2") {
-        blacklister = msg.sender;
+    /// @param blacklister_ Address allowed to (un)blacklist accounts (explicit so CREATE2-factory deploys keep it).
+    // forge-lint: disable-next-line(missing-zero-check)
+    constructor(address blacklister_) ERC20("USDC", "USDC") EIP712("USDC", "2") {
+        blacklister = blacklister_;
     }
 
     // ------------------------------------------------------------------ ERC-20 / FiatToken parity

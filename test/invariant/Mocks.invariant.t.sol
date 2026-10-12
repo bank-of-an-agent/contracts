@@ -170,7 +170,7 @@ contract MockTreasuryFundInvariantTest is BaseTest {
 
     function setUp() public override {
         super.setUp();
-        fund = new MockTreasuryFund(IERC20(address(usdc)));
+        fund = new MockTreasuryFund(IERC20(address(usdc)), address(this));
         handler = new FundHandler(fund, usdc);
         targetContract(address(handler));
     }
