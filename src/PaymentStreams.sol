@@ -14,8 +14,9 @@ import {TokenTransfer} from "./utils/TokenTransfer.sol";
 /// @notice Pre-funded per-second streams and recurring payments with one formula:
 ///         `accrued(t) = min(deposit, floor((min(t, stop) - start) / interval) * amountPerInterval)`.
 ///         `interval = 1` streams per second; `interval = 30 days` pays a fixed amount every 30 days (in arrears).
-///         Anyone may `settle` accrued funds to the payee; the payer (or payee) may `cancel`, which settles what has
-///         accrued and refunds the rest to the payer.
+///         Anyone may `settle` accrued funds to the payee; only the payer may `cancel`, which settles what has
+///         accrued and refunds the rest to the payer. Only the payer may `topUp` (so an agent can never be made to fund
+///         someone else's stream).
 /// @dev Non-custodial: no owner, no admin withdrawal, no upgradeability. The pause guardian can only stop new streams
 ///      and top-ups. Invariants: per stream `paid + refunded <= deposit`; per token
 ///      `balanceOf(this) >= totalOutstanding[token] == sum(deposit - paid - refunded)`.
@@ -127,7 +128,7 @@ contract PaymentStreams is IPaymentStreams, GuardianPausable, ReentrancyGuardTra
     }
 
     /// @notice Cancels the stream: freezes accrual now, pays the payee what has accrued, refunds the rest to the payer.
-    /// @dev Payer or payee. The payer's refund never depends on the payee being able to receive: if paying the payee
+    /// @dev Payer only. The payer's refund never depends on the payee being able to receive: if paying the payee
     ///      fails (e.g. the token froze the payee), that amount stays settleable via `settle` and
     ///      `StreamSettlementDeferred` is emitted.
     /// @param id Stream id.
@@ -136,9 +137,9 @@ contract PaymentStreams is IPaymentStreams, GuardianPausable, ReentrancyGuardTra
     function cancel(uint256 id) external nonReentrant returns (uint256 payeeAmount, uint256 refundAmount) {
         Stream storage s = _existing(id);
         address payer = s.payer;
-        address payee = s.payee;
-        if (msg.sender != payer && msg.sender != payee) revert Unauthorized(msg.sender);
+        if (msg.sender != payer) revert Unauthorized(msg.sender);
         if (s.canceled) revert StreamIsCanceled(id);
+        address payee = s.payee;
 
         uint256 accruedNow = _accruedAt(s, block.timestamp);
         // Freeze accrual at max(now, start) so accrued(t) stays equal to accruedNow forever.

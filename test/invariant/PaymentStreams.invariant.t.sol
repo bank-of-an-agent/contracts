@@ -19,6 +19,8 @@ contract StreamsHandler is Test {
     uint256 public ghostMinted;
     uint256 public ghostDonated;
     mapping(uint256 id => uint256) public ghostAccruedAtCancel;
+    uint256 public ghostUnauthorizedCancels; // must stay 0
+    uint256 public ghostForeignTopUps; // must stay 0
     mapping(bytes32 action => uint256) public calls;
 
     constructor(PaymentStreams streams_, MockUSDC usdc_) {
@@ -75,6 +77,21 @@ contract StreamsHandler is Test {
         vm.stopPrank();
     }
 
+    /// @dev An outsider tries to fund someone else's stream (e.g. an agent tricked into it): must always fail.
+    function foreignTopUp(uint256 idSeed, uint256 amount) external {
+        (uint256 id,) = _pick(idSeed);
+        if (id == 0) return;
+        amount = bound(amount, 1, 1e12);
+        usdc.mint(outsider, amount);
+        ghostMinted += amount;
+        vm.startPrank(outsider);
+        usdc.approve(address(streams), amount);
+        try streams.topUp(id, amount) {
+            ghostForeignTopUps++;
+        } catch {}
+        vm.stopPrank();
+    }
+
     function settle(uint256 idSeed) external {
         (uint256 id,) = _pick(idSeed);
         if (id == 0) return;
@@ -92,6 +109,7 @@ contract StreamsHandler is Test {
         uint256 accruedNow = streams.accrued(id);
         vm.prank(byPayee ? s.payee : s.payer);
         try streams.cancel(id) {
+            if (byPayee) ghostUnauthorizedCancels++;
             ghostAccruedAtCancel[id] = accruedNow;
             calls["cancel"]++;
         } catch {
@@ -178,14 +196,19 @@ contract PaymentStreamsInvariantTest is BaseTest {
         assertEq(usdc.balanceOf(address(streams)), sum + handler.ghostDonated());
     }
 
-    /// @notice Tokens only move between stream parties and the contract.
+    /// @notice Tokens only move between stream parties and the contract (an outsider's failed top-ups stay with it).
     function invariant_conservation() public view {
-        uint256 held = usdc.balanceOf(address(streams));
+        uint256 held = usdc.balanceOf(address(streams)) + usdc.balanceOf(handler.outsider());
         uint256 n = handler.actorsLength();
         for (uint256 i; i < n; ++i) {
             held += usdc.balanceOf(handler.actors(i));
         }
         assertEq(held, handler.ghostMinted());
-        assertEq(usdc.balanceOf(handler.outsider()), 0);
+    }
+
+    /// @notice Only the payer ever cancels or tops up a stream.
+    function invariant_onlyPayerCancelsOrTopsUp() public view {
+        assertEq(handler.ghostUnauthorizedCancels(), 0);
+        assertEq(handler.ghostForeignTopUps(), 0);
     }
 }

@@ -708,6 +708,59 @@ contract AgentEscrowTest is BaseTest {
         escrow.release(id);
     }
 
+    // ------------------------------------------------------------------ access-control matrix (fuzzed callers)
+
+    /// @notice release: only payer or arbiter. dispute: only payer or payee, before expiry. resolve: only arbiter.
+    ///         refund before expiry: only the payee (funds always go to the payer).
+    function testFuzz_accessControlMatrix(uint8 role, address random) public {
+        vm.assume(random != address(0));
+        address[5] memory candidates = [payer, payee, arbiter, validator, random];
+        address caller = candidates[role % 5];
+        bool isPayer = caller == payer;
+        bool isPayee = caller == payee;
+        bool isArbiter = caller == arbiter;
+
+        uint256 id = _lock(arbiter);
+        vm.prank(caller);
+        if (isPayer || isArbiter) {
+            escrow.release(id);
+        } else {
+            vm.expectRevert(abi.encodeWithSelector(IAgentEscrow.Unauthorized.selector, caller));
+            escrow.release(id);
+        }
+
+        id = _lock(arbiter);
+        vm.prank(caller);
+        if (isPayer || isPayee) {
+            escrow.dispute(id);
+        } else {
+            vm.expectRevert(abi.encodeWithSelector(IAgentEscrow.Unauthorized.selector, caller));
+            escrow.dispute(id);
+        }
+
+        id = _lock(arbiter);
+        vm.prank(payee);
+        escrow.dispute(id);
+        vm.prank(caller);
+        if (isArbiter) {
+            escrow.resolve(id, 1);
+        } else {
+            vm.expectRevert(abi.encodeWithSelector(IAgentEscrow.Unauthorized.selector, caller));
+            escrow.resolve(id, 1);
+        }
+
+        id = _lock(arbiter);
+        uint256 payerBefore = usdc.balanceOf(payer);
+        vm.prank(caller);
+        if (isPayee) {
+            escrow.refund(id);
+            assertEq(usdc.balanceOf(payer), payerBefore + AMOUNT, "refund always to the payer");
+        } else {
+            vm.expectRevert(abi.encodeWithSelector(IAgentEscrow.RefundNotYetAvailable.selector, id, uint256(expiry)));
+            escrow.refund(id);
+        }
+    }
+
     // ------------------------------------------------------------------ fuzz
 
     /// @notice Funds only ever go to the payer or the payee, and are paid out exactly once.

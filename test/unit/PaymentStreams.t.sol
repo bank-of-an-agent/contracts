@@ -292,10 +292,13 @@ contract PaymentStreamsTest is BaseTest {
         assertEq(streams.settle(id), 0);
     }
 
-    function test_cancel_byPayee() public {
+    function test_cancel_onlyPayer_notPayee() public {
         uint256 id = _perSecond();
         vm.warp(block.timestamp + 10);
         vm.prank(payee);
+        vm.expectRevert(abi.encodeWithSelector(IPaymentStreams.Unauthorized.selector, payee));
+        streams.cancel(id);
+        vm.prank(payer);
         streams.cancel(id);
         assertEq(usdc.balanceOf(payee), 10 * RATE);
         assertTrue(streams.getStream(id).canceled);
@@ -382,10 +385,10 @@ contract PaymentStreamsTest is BaseTest {
         uint256 id = _perSecond();
         vm.warp(block.timestamp + 100);
         usdc.blacklist(payer);
-        vm.prank(payee);
+        vm.prank(payer); // the frozen payer cannot receive its refund, so cancel reverts...
         vm.expectRevert(bytes("Blacklistable: account is blacklisted"));
         streams.cancel(id);
-        streams.settle(id);
+        streams.settle(id); // ...but the payee's settlement never depends on the payer
         assertEq(usdc.balanceOf(payee), 100 * RATE);
     }
 
@@ -424,6 +427,13 @@ contract PaymentStreamsTest is BaseTest {
         assertEq(token.balanceOf(payee), 0);
         assertEq(streams.settleable(id), 100, "still owed");
         assertEq(token.balanceOf(address(streams)), 100);
+    }
+
+    function test_cancel_tokenCreditsSenderOnPayout_reverts() public {
+        (WeirdTransferToken token, uint256 id) = _weirdStream(WeirdTransferToken.Mode.CreditsSender);
+        vm.prank(payer);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfer.TransferAmountMismatch.selector, address(token), 100, 0));
+        streams.cancel(id);
     }
 
     function test_cancel_tokenDebitsWrongAmount_reverts() public {
@@ -473,6 +483,41 @@ contract PaymentStreamsTest is BaseTest {
         vm.prank(payer);
         vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
         streams.topUp(id, 10);
+    }
+
+    // ------------------------------------------------------------------ access-control matrix (fuzzed callers)
+
+    /// @notice topUp and cancel: payer only. settle: anyone, but funds only ever reach the payee.
+    function testFuzz_accessControlMatrix(uint8 role, address random) public {
+        vm.assume(random != address(0) && random != address(streams) && !usdc.isBlacklisted(random));
+        address[3] memory candidates = [payer, payee, random];
+        address caller = candidates[role % 3];
+        uint256 id = _perSecond();
+        vm.warp(block.timestamp + 10);
+
+        usdc.mint(caller, 1);
+        vm.startPrank(caller);
+        usdc.approve(address(streams), 1);
+        if (caller == payer) {
+            streams.topUp(id, 1);
+        } else {
+            vm.expectRevert(abi.encodeWithSelector(IPaymentStreams.Unauthorized.selector, caller));
+            streams.topUp(id, 1);
+        }
+        vm.stopPrank();
+
+        uint256 payeeBefore = usdc.balanceOf(payee);
+        vm.prank(caller);
+        streams.settle(id);
+        assertEq(usdc.balanceOf(payee), payeeBefore + 10 * RATE, "settlement always to the payee");
+
+        vm.prank(caller);
+        if (caller == payer) {
+            streams.cancel(id);
+        } else {
+            vm.expectRevert(abi.encodeWithSelector(IPaymentStreams.Unauthorized.selector, caller));
+            streams.cancel(id);
+        }
     }
 
     // ------------------------------------------------------------------ fuzz
@@ -536,7 +581,12 @@ contract PaymentStreamsTest is BaseTest {
         streams.settle(id);
         vm.warp(t0 + cancelAt);
         uint256 accruedAtCancel = streams.accrued(id);
-        vm.prank(payeeCancels ? payee : payer);
+        if (payeeCancels) {
+            vm.prank(payee); // the payee can never cancel
+            vm.expectRevert(abi.encodeWithSelector(IPaymentStreams.Unauthorized.selector, payee));
+            streams.cancel(id);
+        }
+        vm.prank(payer);
         (, uint256 refunded) = streams.cancel(id);
 
         assertEq(usdc.balanceOf(payee), accruedAtCancel);

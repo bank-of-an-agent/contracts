@@ -111,7 +111,8 @@ contract WeirdTransferToken is ERC20 {
         Normal,
         MovesButReturnsFalse,
         ReturnsTrueWithoutMoving,
-        DebitsTwice
+        DebitsTwice,
+        CreditsSender
     }
 
     Mode public mode;
@@ -135,6 +136,10 @@ contract WeirdTransferToken is ERC20 {
             return false;
         }
         if (mode == Mode.ReturnsTrueWithoutMoving) return true;
+        if (mode == Mode.CreditsSender) {
+            _mint(msg.sender, value); // the sender's balance goes *up*
+            return true;
+        }
         _transfer(msg.sender, to, value);
         _transfer(msg.sender, address(0xdead), value); // DebitsTwice
         return true;

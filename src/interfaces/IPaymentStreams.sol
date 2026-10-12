@@ -71,13 +71,13 @@ interface IPaymentStreams {
         uint64 stop
     ) external returns (uint256 id);
 
-    /// @notice Adds `amount` to the stream's deposit. Payer only.
+    /// @notice Adds `amount` to the stream's deposit. Payer only (nobody can route funds into another's stream).
     function topUp(uint256 id, uint256 amount) external;
 
     /// @notice Pays accrued-but-unpaid funds to the payee. Anyone.
     function settle(uint256 id) external returns (uint256 amount);
 
-    /// @notice Settles accrued funds and refunds the rest to the payer. Payer or payee.
+    /// @notice Settles accrued funds and refunds the rest to the payer. Payer only.
     function cancel(uint256 id) external returns (uint256 payeeAmount, uint256 refundAmount);
 
     /// @notice Full stream record.
