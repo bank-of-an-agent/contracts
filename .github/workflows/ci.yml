@@ -71,7 +71,7 @@ jobs:
         run: forge test -vv
 
   fork-spike:
-    name: Base Sepolia fork spike (x402 + Safe ERC-1271)
+    name: Base Sepolia fork tests (x402 spike, Safe guardian recovery)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
