@@ -1,0 +1,23 @@
+{
+  "name": "@agentbank/circuits",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Bank zero-knowledge circuits (Circom 2, Groth16 on BN254)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "scripts/build.sh",
+    "check": "scripts/check.sh",
+    "test": "node --test --test-timeout=600000 'test/*.test.mjs'",
+    "fixtures": "node scripts/fixtures.mjs"
+  },
+  "devDependencies": {
+    "@noble/hashes": "1.8.0",
+    "circomlib": "2.0.5",
+    "poseidon-lite": "0.3.0",
+    "snarkjs": "0.7.6"
+  }
+}

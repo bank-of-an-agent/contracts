@@ -7,6 +7,7 @@ Agent Bank is a non-custodial bank for AI agents. Each agent owns an ERC-7579 sm
 | Compiler | solc **0.8.30**, EVM **cancun**, optimizer on (10,000 runs), `via_ir = false`, no CBOR metadata (`bytecode_hash = "none"`) |
 | Dependencies | OpenZeppelin Contracts **v5.7.0**, forge-std v1.16.2 (tests only) |
 | Toolchain | Foundry 1.8.4 |
+| Circuit toolchain | Circom **2.2.3**, circomlib **2.0.5**, snarkjs **0.7.6**: Groth16 on BN254 (`circuits/`, ADR 0003) |
 | Target chains | Base Sepolia (84532) and Anvil (31337). The deploy script refuses Base mainnet (`MAINNET_LOCKED`) and any other chain (`UNSUPPORTED_CHAIN`). |
 | Settlement asset | USDC (Circle FiatToken v2.2) |
 
@@ -22,10 +23,14 @@ Agent Bank is a non-custodial bank for AI agents. Each agent owns an ERC-7579 sm
 | `src/TopUpExecutor.sol` | 134 | ERC-7579 executor (type 2): keeper-triggered refills from the org treasury to configured agent accounts |
 | `src/utils/GuardianPausable.sol` | 44 | Inflow-only pause guardian |
 | `src/utils/TokenTransfer.sol` | 25 | Exact-amount pull and balance-checked push helpers |
-| `src/interfaces/*.sol` | 415 | Interfaces, events, errors and types; minimal ERC-7579 and ERC-8004 definitions |
-| **Total** | **1,526** | |
+| `src/AgentAttestationRegistry.sol` | 73 | Private proofs: public roots of Agent Bank's attested-facts trees. The attester publishes (strictly increasing epochs, validity ≤ 7 days from publication) and revokes; an `Ownable2Step` owner rotates the attester and can revoke. Holds no funds |
+| `src/AgentClaimsVerifier.sol` | 92 | Private proofs: checks agentbank.claims.v1 proofs against the registry (`verify`, a view), and `verifyAndConsume` for contracts (caller-bound scope, single-use nonce). Holds no funds |
+| `src/verifiers/AgentClaimsGroth16Verifier.sol` | 210 | Groth16 verifier **generated** by snarkjs 0.7.6 from the proving key (`circuits/scripts/export.sh`); never edited by hand; CI re-exports it byte for byte |
+| `circuits/agent_claims.circom` | 85 (Circom) | The claims circuit: Poseidon leaf, depth-20 Merkle inclusion, 13 × 64-bit range checks against `[min, max]`, the disclosure mask, the per-scope nullifier and the nonce binding. 10,270 constraints, 30 public signals |
+| `src/interfaces/*.sol` | 493 | Interfaces, events, errors and types; minimal ERC-7579 and ERC-8004 definitions |
+| **Total** | **1,979** Solidity + **85** Circom | |
 
-**Out of scope:** `src/mocks/*` (MockUSDC, MockTreasuryFund, MockValidationRegistry: local and Anvil fixtures only, never deployed elsewhere), `test/**`, and `script/Deploy.s.sol`. The deploy script's chain guards are tested in `test/script/Deploy.t.sol`.
+**Out of scope:** `src/mocks/*` (MockUSDC, MockTreasuryFund, MockValidationRegistry: local and Anvil fixtures only, never deployed elsewhere), `test/**`, and `script/Deploy.s.sol`. The deploy script's chain guards are tested in `test/script/Deploy.t.sol`. In `circuits/`, the scripts, the reference implementation (`lib/claims.mjs`) and the tests are tooling; `artifacts/` and `ceremony/` are generated and are checked mechanically (`scripts/check.sh`: recompile, compare the R1CS and WASM hashes, verify the proving key against the circuit and the phase-1 file, re-export the verification key and Solidity verifier byte for byte) rather than read. The trusted setup itself is testnet-only (§6.14).
 
 ## 2. The core property: Agent Bank can never move user funds
 
@@ -34,9 +39,10 @@ Design rule: *no contract, admin function or upgrade path may let Agent Bank, or
 **Global properties of the codebase**
 
 - **No upgradeability.** No proxies, `delegatecall`, `selfdestruct` or initializer patterns. Deployed bytecode is final.
-- **No owners or admins.** No `Ownable`, no access-controlled withdraw, rescue, sweep or skim function. Tokens sent to a contract by mistake are stuck forever. That is deliberate: there is no "recover" function that could be abused.
+- **No owners or admins over funds.** No contract that holds or moves funds is `Ownable`, and there is no access-controlled withdraw, rescue, sweep or skim function. Tokens sent to a contract by mistake are stuck forever. That is deliberate: there is no "recover" function that could be abused. The one `Ownable2Step` contract, `AgentAttestationRegistry`, holds and moves nothing: its owner can only rotate the attester key and revoke roots.
 - **One bank-adjacent role: the pause guardian.** It exists on AgentEscrow, PaymentStreams and TimeLockVaults. `whenNotPaused` guards **only** functions that bring new money in: `lock`, `createStream`, `topUp`, `deposit`. It never guards `release`, `releaseByValidation`, `refund`, `dispute`, `resolve`, `settle`, `cancel`, `withdraw`, `withdrawWithSignature` or `setOwner`. The guardian can be rotated or renounced. Renouncing while paused retires the contract for new deposits only. A zero guardian can never act, not even as `msg.sender == address(0)`.
 - **The modules hold no funds and grant no bank powers.** They act only on accounts that installed them, are configured only by those accounts, and can only reach destinations the account configured.
+- **The private-proofs contracts touch no funds.** `AgentAttestationRegistry` stores roots; `AgentClaimsVerifier` only STATICCALLs the registry and the generated verifier, and its only state is the set of consumed `(scope, nonce)` pairs. Neither has a payable function or calls a token.
 
 **Per contract: where funds can go**
 
@@ -48,6 +54,8 @@ Design rule: *no contract, admin function or upgrade path may let Agent Bank, or
 | AgentPolicyHook | holds nothing; only restricts the account's own executions | — | none |
 | SweepExecutor | between the account and the **owner-chosen fund**; shares and redemptions always go to the account | anyone (keeper), within the owner's rule | none |
 | TopUpExecutor | from the treasury to **owner-configured agent accounts**, within the owner's daily cap | anyone (keeper), within the owner's rule | none |
+| AgentAttestationRegistry | holds nothing | — | the attester publishes and revokes roots (what proofs can attest); the owner rotates the attester |
+| AgentClaimsVerifier | holds nothing | — | none |
 
 The owner's exit path is the Safe's native `execTransaction`. ERC-7579 hooks never see it, so `AgentPolicyHook` can never trap funds. Module management (`installModule` and `uninstallModule`) always passes the hook, and the hook can be uninstalled whatever its state (`test_desyncedHook_failsClosed_butCanAlwaysBeUninstalled`).
 
@@ -67,11 +75,15 @@ The owner's exit path is the Safe's native `execTransaction`. ERC-7579 hooks nev
 | **Guardian recovery**: Candide SocialRecoveryModule v0.0.1, 72 h variant `0x38275826…541c` (external; audited by Ackee, Nethermind on the Safe-vendored version; Certora specs) | Rotating the Safe owner after 72 h when the guardian threshold confirms. The owner can cancel during the delay, and a guardian can never become an owner. **Agent Bank holds at most one guardian seat, with threshold ≥ 2 and threshold > guardians/2.** That policy is enforced at provisioning and by monitoring, not by the module (ADR 0002; `test/fork/CandideSocialRecovery.fork.t.sol`). | Acting alone: Agent Bank's seat can never reach the threshold. |
 | **ERC-7579 account implementation** (Safe7579) | Passing the full `msg.data` to `preCheck`; enforcing that only installed executors can call `executeFromExecutor`; decoding executions per the spec | — |
 | **Smart Sessions** (session-key validator; the first on-chain spend layer) | Enforcing the session scope that `AgentPolicyHook` backs up. **Use Smart Sessions V1 at `0x00000000008bDABA…`**, verified by the chain integration package on a Base Sepolia fork. The `0x00000000002B0eCf…` deployment is the pre-V1 beta and must not be used. Agent sessions must have no ERC-1271 policies and no actions targeting the account itself (§6.1, §6.2). | — |
+| **Attester** (Agent Bank's root-publishing key; KMS outside testnet; separate from every key that can touch funds) | Attesting true facts about each agent and publishing the tree's root, epoch, snapshot time, validity window and honest leaf count; revoking roots after narrowing changes | Moving anything: it has no power over funds. A compromised attester can attest false facts, or pad a tree with fake leaves to inflate the anonymity set, until the owner rotates it and revokes its roots (§6.15). Every root is public and permanent on-chain. |
+| **Registry owner** (`AgentAttestationRegistry`, `Ownable2Step`; a governance multisig) | Rotating the attester; revoking roots | Publishing roots (only the attester can). It cannot renounce ownership (`RenounceOwnershipDisabled`), so a compromised attester can always be replaced. |
+| **Trusted-setup participants** (testnet: a single party, `circuits/ceremony/TRANSCRIPT.md`) | Destroying the setup randomness. Whoever knows it can forge a proof of any statement against any published root. | Testnet only; mainnet needs a public multi-party ceremony (§6.14, ADR 0003). |
+| **Proof consumers** (contracts calling `verifyAndConsume`, off-chain verifiers calling `verify` or the SDKs) | Building the claims from their own request (scope, nonce, bounds) and choosing `minAnonymitySet` and `maxRootAge`; tracking nonces themselves when they use the stateless `verify` | — |
 | **ERC-7484 module registry** (Safe7579 `setRegistry`) | Not relied on. The hook and both executors are **not attested** in the module registry. Accounts must therefore disable the registry check before installing them: `setRegistry(address(0), [], 0)`, the chain package's `disableModuleRegistry` step. With the registry off, module vetting rests on the owner and these audits rather than on attestations, and that applies to every module the owner installs later (§6.12). | — |
 
 ## 4. Invariants (all tested)
 
-Unit tests check exact behaviour. Fuzz tests check the properties below over random inputs. Handler-based invariant tests check them over random call sequences. The default profile runs 256 runs × 100 depth; the `ci` profile runs 1,000 × 200. Ghost accounting tracks expected state, and in-handler postconditions are recorded as counters rather than asserted, so `fail_on_revert = false` cannot hide them.
+Unit tests check exact behaviour. Fuzz tests check the properties below over random inputs. Handler-based invariant tests check them over random call sequences. The default profile runs 256 runs × 100 depth; the `ci` profile runs 1,000 × 200. Ghost accounting tracks expected state, and in-handler postconditions are recorded as counters rather than asserted, so `fail_on_revert = false` cannot hide them. The Z-invariants are checked on the circuit itself with real Groth16 proofs (`npm test` in `circuits/`); every soundness case asserts the exact constraint that rejects it.
 
 | # | Invariant | Where |
 | --- | --- | --- |
@@ -99,6 +111,23 @@ Unit tests check exact behaviour. Fuzz tests check the properties below over ran
 | T1 | Every top-up respects the rule in force: only below `whenBelow`, never above `refillTo`, never above `maxPerDay` | `TopUpExecutor.invariant` · `invariant_rulesRespected` |
 | T2 | Treasury funds only reach configured agents | `invariant_fundsOnlyToConfiguredAgents` |
 | P1 | Exits are never blocked by the pause; only the current guardian toggles it | `GuardianPausable.t.sol` · `invariant_exitsNeverBlocked_onlyGuardianToggles` |
+| R1 | Published epochs strictly increase; `latestEpoch`/`latestRoot` track the newest root | `AgentAttestationRegistry.invariant` · `invariant_epochsStrictlyIncrease`, `testFuzz_publishRoot_epochs` |
+| R2 | Only the attester in office publishes; publish, revoke and rotation succeed exactly when their documented requirements hold | `invariant_onlyAttesterPublishes`, `AgentAttestationRegistry.t.sol` · `testFuzz_accessControl` |
+| R3 | A revoked root is never valid again, and no root can ever be published twice (not even after revocation or expiry) | `invariant_revokedRootsNeverValid`, `test_publishRoot_rootCanNeverBeRepublished` |
+| R4 | Every root has `publishedAt < validUntil ≤ publishedAt + MAX_VALIDITY`, `snapshotAt ≤ publishedAt` and `leafCount > 0`, and is valid exactly while unrevoked and `block.timestamp ≤ validUntil` | `invariant_validRootsWithinMaxValidity`, `testFuzz_publishRoot_validityWindow`, `testFuzz_isValidRoot_window` |
+| R5 | Roots are non-zero elements of the BN254 scalar field | `testFuzz_publishRoot_fieldBound` |
+| R6 | The registry always has an owner, and the owner can always rotate the attester | `invariant_ownerCanAlwaysRotateAttester`, `test_renounceOwnership_isDisabled` |
+| C1 | A proof verifies only for its exact statement: changing any of the 30 public signals (root included, even to another valid root) or any proof coordinate never verifies | `AgentClaimsVerifier.t.sol` · `testFuzz_verify_tamperedSignalNeverVerifies`, `testFuzz_verify_tamperedProofNeverVerifies`, `test_verify_rejectsProofAgainstAnotherValidRoot` |
+| C2 | Proofs are only accepted against a root that is published, unrevoked and unexpired, has at least `minAnonymitySet` leaves and, when `maxRootAge ≠ 0`, a snapshot no older than `maxRootAge` | `test_verify_rootNotValid`, `test_verify_rootTooOld`, `test_verify_anonymitySet`, `test_verifyAndConsume_*` |
+| C3 | Public signals must be canonical field elements: `x` and `x + r` are never both accepted | `test_verify_fieldElementOutOfRange`, `AgentClaimsGroth16Verifier.t.sol` · `test_rejectsNonCanonicalSignals` |
+| C4 | `verifyAndConsume` accepts only `scope == scopeOf(msg.sender, context)` on this chain, accepts each `(scope, nonce)` at most once, and consumes nothing on failure | `testFuzz_verifyAndConsume_onlyTheScopedConsumer`, `test_verifyAndConsume_acceptsOnceAndEmits`, `test_verifyAndConsume_invalidProofConsumesNothing` |
+| C5 | `verify` never changes state; with too little gas the generated verifier never returns true | `test_verify_isStatelessAndRepeatable`, `test_tooLittleGasNeverVerifies` |
+| Z1 | Completeness: each product (verified company and limits, reputation, balance, reservation) proves from leaves at odd, even, first and last positions | `circuits/test/proofs.test.mjs` · "products" |
+| Z2 | Range soundness: an attribute just below its min or just above its max cannot be witnessed; bounds, attributes or "negative" values ≥ 2^64 are rejected | `circuits/test/soundness.test.mjs` · "bounds" |
+| Z3 | Disclosure: an attribute whose mask bit is clear admits only `[0, 2^64 − 1]` (not even `min = 1` or `max = 2^64 − 2`); masks ≥ 2^13 are rejected | `soundness.test.mjs` · "disclosure mask" |
+| Z4 | Membership: a wrong secret, attribute, mask, sibling, path bit (or a non-boolean one), index or root fails | `soundness.test.mjs` · "membership" |
+| Z5 | `nullifier = Poseidon2(secret, scope)`: stable per agent and scope across leaves and nonces, different across scopes and agents | `proofs.test.mjs` · "nullifier" |
+| Z6 | Binding: changing any of the 30 public signals (in the field or by `+ r`) or any proof point fails verification; a proof never verifies another statement; a reservation proves nothing to another scope | `proofs.test.mjs` · "binding", "products" |
 
 ## 5. Design decisions worth reviewing
 
@@ -112,6 +141,11 @@ Unit tests check exact behaviour. Fuzz tests check the properties below over ran
 8. **What the hook counts.** Approvals count against caps when granted (an allowance is a future outflow), not when pulled. `transferFrom` into the account counts as an inflow (used to recover a spend-key float). The per-transaction cap applies to the sum of a token's outflows across one hooked execution, single or batch.
 9. **SweepExecutor semantics.** A sweep triggers once `liquid − floor ≥ sweepThreshold`. It then subscribes the excess above the floor, capped by `maxSavingsBps` of total value and by `fund.maxDeposit`. Redemption refills the floor (shares rounded up by the fund, capped by `maxRedeem`). Every subscription must keep at least 99.9% of value (`MAX_SUBSCRIPTION_LOSS_BPS = 10`). The fuzzer found that donation/inflation set-ups on near-empty funds otherwise lose value on permissionless sweeps.
 10. **TopUpExecutor** (added during Phase 4 at the orchestrator's request). The amount is `min(refillTo − balance, maxPerDay − spentToday, treasuryBalance)`. The agent's received amount is verified by balance delta. Rule changes keep the day's running total.
+
+11. **Private proofs** ([ADR 0003](docs/adr/0003-private-proofs.md); design in `agent-bank/docs/private-proofs.md`). A Circom circuit proved with Groth16 on BN254; the verifier never takes public signals from the prover but rebuilds them from its own request. Public signals are `nullifier, root, scope, nonce, mins[13], maxs[13]`; `[0, 2^64 − 1]` means "unconstrained".
+12. **Registry rules.** One attester key and an `Ownable2Step` owner that cannot renounce. `MAX_VALIDITY` (7 days) is measured from publication (`block.timestamp`), not from `snapshotAt`, so an old snapshot cannot buy a longer window; verifiers bound data age separately with `maxRootAge`. Epochs must strictly increase but may skip. A root can never be published twice, even after revocation or expiry, so a revoked root cannot be revived. `revokeRoots` skips already-revoked roots (idempotent retries) but reverts the whole call on a root that was never published (catches typos). A root counts as published when its stored epoch is non-zero (every accepted epoch is ≥ 1).
+13. **Verifier rules.** `verify` is a stateless view that returns false on any failure (it does not consume nonces). `verifyAndConsume` binds the scope to `(block.chainid, msg.sender, context)` and consumes `(scope, nonce)`, never the proof bytes, because Groth16 proofs are malleable. A nonce is consumed only on success. Checks run in the order: root valid, root age, anonymity set, field range, pairing. The root is not range-checked again (the registry only stores field elements). `maxRootAge` is compared as `block.timestamp > snapshotAt + maxRootAge`, which cannot underflow.
+14. **Scopes and reservations.** On-chain `scope = keccak256(abi.encode("agentbank.proofs.scope.v1", chainId, consumer, context)) mod r`; HTTP verifiers hash `"agentbank.proofs.scope.v1:" + host`. A reservation is tagged with `scope mod 2^64`, so it only proves something to the verifier whose scope has that tag.
 
 ## 6. Known limitations and residual risks
 
@@ -129,6 +163,14 @@ Unit tests check exact behaviour. Fuzz tests check the properties below over ran
 12. **Module registry disabled.** Our modules are not attested in the ERC-7484 registry, so accounts install them only after disabling Safe7579's registry check (`disableModuleRegistry`). Until they are attested, and the registry is re-enabled with Agent Bank's attester, Safe7579 does not block an unvetted module the owner installs. The owner's signature is still required for every install.
 13. **Recovery policy is off-chain.** Candide's SocialRecoveryModule does not enforce "threshold > n/2" or "Agent Bank holds at most one seat". Provisioning enforces those rules and monitoring alerts on any guardian change that breaks them. The owner can re-configure guardians with their own signature (ADR 0002). The deployed bytecode (v0.0.1) should be checked against Ackee's audited commit during the audit.
 
+14. **Testnet-only trusted setup.** The proving and verification keys come from a single-party ceremony (`circuits/scripts/ceremony.sh`, transcript in `circuits/ceremony/TRANSCRIPT.md`). Whoever ran it could forge proofs of any statement. Mainnet requires a public multi-party Powers of Tau and phase 2; the generated verifier and `AgentClaimsVerifier` are then redeployed (the registry is unaffected).
+15. **Verifiers trust the attester.** A proof shows that Agent Bank attested the facts, not that they are true on-chain. A compromised attester key can attest false facts or add fake leaves until the owner rotates it and revokes its roots; it can never move funds. Roots are public and timestamped, which stops Agent Bank from showing different verifiers different trees but not from attesting falsely.
+16. **The anonymity set is the leaf count, as attested.** `leafCount` is reported by the attester and cannot be checked on-chain, and one agent can hold several leaves (its base leaf plus one per reservation), so the number of distinct agents can be lower. Small deployments have small sets; consumers choose `minAnonymitySet` (the SDK defaults to 16). The root also reveals roughly when the facts were read.
+17. **Malformed proofs burn the gas forwarded to the pairing precompile.** A point off the curve or outside the subgroup makes the BN254 precompile consume all gas it is given; the generated verifier then returns false and `verifyAndConsume` reverts `InvalidProof`. Contracts relaying untrusted proofs should bound the gas they forward (`test_verify_malformedProofCostIsBoundedByTheCaller`). A valid proof costs about 409,000 gas (`verify`) or 467,000 gas (`verifyAndConsume`).
+18. **Nullifiers are per agent, not per principal.** `verifyAndConsume` lets a contract admit each agent once per context, but an owner with many enrolled agents gets one nullifier per agent. Within one scope, presentations by the same agent are linkable by design.
+19. **`verify` does not consume nonces.** Callers that use the view must track used nonces themselves (the SDK gates do).
+20. **Reservation tags are 64 bits.** Two verifier scopes share a tag with probability 2^-64 per pair; a reservation for one would then also satisfy the other's `reserved_for` bound.
+
 ## 7. Static analysis
 
 `forge lint` (high, medium and low severities) runs on every build, and CI runs it with `--deny warnings`. Two lints are disabled project-wide in `foundry.toml`, with reasons:
@@ -144,7 +186,9 @@ Every other suppression is inline with a justification. They cover:
 - `divide-before-multiply`: only whole intervals accrue;
 - `calls-loop`, `missing-zero-check`, `mixed-case-function` (`DOMAIN_SEPARATOR`), `empty-block` (`postCheck`).
 
-**Slither 0.11.5** was run with `slither . --filter-paths "lib/|test/|script/|src/mocks/" --exclude-dependencies`. It found 52 results, triaged below. Two earlier findings led to code changes:
+`src/verifiers/` (the snarkjs-generated Groth16 verifier) is excluded from `forge fmt` and `forge lint`: it must stay byte-identical to the export, which CI checks (`circuits/scripts/check.sh`).
+
+**Slither 0.11.5** was run with `slither . --filter-paths "lib/|test/|script/|src/mocks/" --exclude-dependencies`. Re-run on 2026-10-12 with the private-proofs contracts, it found 161 results: the 52 triaged earlier plus 109 on the new files, all triaged below. Two earlier findings led to code changes:
 
 - `arbitrary-send-erc20`: `TokenTransfer.pullExact` now always pulls from `msg.sender`.
 - `uninitialized-local` in `AgentEscrow.release`: the release reason is now computed after the authorization check.
@@ -157,6 +201,9 @@ Every other suppression is inline with a justification. They cover:
 | `unused-return` (5) | Intentional. The registry tuple is partially destructured (unused fields are ignored), and executor and `trySafeTransfer` results are replaced by balance checks. |
 | `divide-before-multiply` (1) | Intentional: only whole intervals accrue. |
 | `timestamp` (18), `calls-loop` (1), `missing-zero-check` (1, renounce), `assembly` (3), `naming-convention` (2) | Intentional; see above. |
+| Private proofs: `naming-convention` (99) | Generated verifier constants (`alphax`, `IC0x`, …) and the interfaces' constant getters (`MAX_VALIDITY`, `SNARK_SCALAR_FIELD`, `ATTRIBUTE_COUNT`). Intentional. |
+| Private proofs: `assembly` (4), `incorrect-return` (3) | The snarkjs verifier is assembly that ends execution with `return(0, 0x20)` holding the boolean result. `AgentClaimsVerifier` calls it externally, so the `return` ends only that call. Generated and byte-checked; intentional. |
+| Private proofs: `timestamp` (3) | Root validity windows and root age are time-based by design. |
 
 ## 8. Tests and how to run them
 
@@ -165,20 +212,28 @@ forge build --sizes                                                   # all depl
 forge test                                                            # unit + fuzz (1k runs) + invariant (256 x 100)
 FOUNDRY_PROFILE=ci forge test                                         # fuzz 10k runs, invariant 1k x 200
 FOUNDRY_PROFILE=fork forge test -vv                                   # Base Sepolia fork tests (needs RPC; skips if none)
-forge coverage --report summary --no-match-coverage '^(test|script)/' # src/ coverage
+forge coverage --report summary --report lcov --no-match-coverage '^(test|script)/' # src/ coverage
+scripts/check-coverage.sh                                             # 100% lines and functions: registry, claims verifier
+
+cd circuits && npm ci                                                 # snarkjs 0.7.6, circomlib 2.0.5, poseidon-lite
+nix shell github:NixOS/nixpkgs/6510408d147d8c5e6d76043e899e9251756f6a75#circom -c scripts/check.sh   # artifacts derive from the circuit
+npm test                                                              # circuit tests with real proofs (~20 s)
+npm run fixtures                                                      # regenerate test/fixtures/claims/*.json
 ```
 
 At the time of writing:
 
-- **254 tests** pass under the default and `ci` profiles: 221 unit tests (including deploy-script tests and the local spike companions), 23 fuzz tests, and 10 handler-based invariant suites covering 25 invariant properties.
+- **308 tests** pass under the default and `ci` profiles: 264 unit tests (including deploy-script tests and the local spike companions), 33 fuzz tests, and 11 handler-based invariant suites covering 30 invariant properties. The private-proofs tests use real Groth16 proofs from the committed artifacts (`test/fixtures/claims/*.json`).
+- **64 circuit tests** pass (`node --test`, about 20 s): 10 on the reference implementation, layout and scopes; 14 completeness, nullifier and binding tests over 4 real proofs; 40 soundness tests, each asserting the exact constraint that rejects the witness.
 - **21 fork tests** pass on Base Sepolia, both at the pinned block and at chain head: 14 for the x402 spike and 7 for guardian recovery.
-- `src/` coverage is **100% of lines, statements, branches and functions**.
+- `src/` coverage is **100% of lines, statements, branches and functions**, including the generated `AgentClaimsGroth16Verifier` (its precompile-failure branches are reached by `test_tooLittleGasNeverVerifies`). CI fails if `AgentAttestationRegistry` or `AgentClaimsVerifier` drop below 100% of lines or functions.
 
 ## 9. Deployment determinism
 
 `script/Deploy.s.sol` deploys through the canonical CREATE2 proxy `0x4e59b44847b379578588920cA78FbF26c0B4956C` with salt `keccak256("agentbank.contracts.v1/<Name>")`.
 
 - An address depends only on the salt, the creation bytecode and the constructor arguments. Bytecode is pinned by the compiler settings above; with no CBOR metadata, comment and formatting changes do not move addresses.
-- AgentPolicyHook, SweepExecutor and TopUpExecutor take no arguments, so they share an address on every chain.
+- AgentPolicyHook, SweepExecutor, TopUpExecutor and AgentClaimsGroth16Verifier take no arguments, so they share an address on every chain.
 - PaymentStreams and TimeLockVaults also depend on `PAUSE_GUARDIAN`. AgentEscrow additionally depends on the chain's validation registry.
+- AgentAttestationRegistry depends on `PROOFS_REGISTRY_OWNER` and `PROOFS_ATTESTER` (both default to the script sender; choose them before broadcasting), and AgentClaimsVerifier on the registry and the Groth16 verifier. A new trusted setup changes the generated verifier, hence both verifier addresses, but not the registry's.
 - The script is idempotent: contracts already deployed are skipped. A broadcast writes `deployments/<chainId>.json`.

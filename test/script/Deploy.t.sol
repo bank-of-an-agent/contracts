@@ -4,6 +4,8 @@ pragma solidity 0.8.30;
 import {Test} from "forge-std/Test.sol";
 
 import {Deploy} from "../../script/Deploy.s.sol";
+import {AgentAttestationRegistry} from "../../src/AgentAttestationRegistry.sol";
+import {AgentClaimsVerifier} from "../../src/AgentClaimsVerifier.sol";
 import {AgentEscrow} from "../../src/AgentEscrow.sol";
 import {AgentPolicyHook} from "../../src/AgentPolicyHook.sol";
 import {PaymentStreams} from "../../src/PaymentStreams.sol";
@@ -12,6 +14,7 @@ import {TimeLockVaults} from "../../src/TimeLockVaults.sol";
 import {TopUpExecutor} from "../../src/TopUpExecutor.sol";
 import {MockTreasuryFund} from "../../src/mocks/MockTreasuryFund.sol";
 import {MockUSDC} from "../../src/mocks/MockUSDC.sol";
+import {AgentClaimsGroth16Verifier} from "../../src/verifiers/AgentClaimsGroth16Verifier.sol";
 
 contract DeployScriptTest is Test {
     /// @dev Runtime code of the canonical deterministic-deployment proxy (Arachnid), present on Anvil and Base.
@@ -30,7 +33,7 @@ contract DeployScriptTest is Test {
     function test_run_onAnvil_deploysEverythingIncludingMocks() public {
         vm.chainId(31_337);
         Deploy.Deployment memory d = script.run();
-        address[10] memory all = [
+        address[13] memory all = [
             d.usdc,
             d.validationRegistry,
             d.treasuryFund,
@@ -40,6 +43,9 @@ contract DeployScriptTest is Test {
             d.timeLockVaults,
             d.sweepExecutor,
             d.topUpExecutor,
+            d.agentClaimsGroth16Verifier,
+            d.agentAttestationRegistry,
+            d.agentClaimsVerifier,
             CREATE2_FACTORY
         ];
         for (uint256 i; i < all.length; ++i) {
@@ -67,6 +73,23 @@ contract DeployScriptTest is Test {
         assertEq(d.validationRegistry, BASE_SEPOLIA_VALIDATION_REGISTRY);
         assertEq(d.treasuryFund, address(0));
         assertEq(address(AgentEscrow(d.agentEscrow).VALIDATION_REGISTRY()), BASE_SEPOLIA_VALIDATION_REGISTRY);
+    }
+
+    /// @notice The private-proofs contracts are wired together; owner and attester default to the script sender.
+    function test_run_deploysPrivateProofs() public {
+        vm.chainId(84_532);
+        vm.etch(BASE_SEPOLIA_VALIDATION_REGISTRY, hex"00");
+        Deploy.Deployment memory d = script.run();
+        AgentAttestationRegistry registry = AgentAttestationRegistry(d.agentAttestationRegistry);
+        AgentClaimsVerifier verifier = AgentClaimsVerifier(d.agentClaimsVerifier);
+        assertEq(d.proofsRegistryOwner, address(this), "default owner: script sender");
+        assertEq(d.proofsAttester, address(this), "default attester: script sender");
+        assertEq(registry.owner(), d.proofsRegistryOwner);
+        assertEq(registry.attester(), d.proofsAttester);
+        assertEq(registry.latestEpoch(), 0);
+        assertEq(verifier.registry(), d.agentAttestationRegistry);
+        assertEq(verifier.groth16Verifier(), d.agentClaimsGroth16Verifier);
+        assertGt(d.agentClaimsGroth16Verifier.code.length, 0);
     }
 
     function test_run_refusesBaseMainnet() public {
@@ -118,6 +141,30 @@ contract DeployScriptTest is Test {
                 abi.encodePacked(type(AgentEscrow).creationCode, abi.encode(address(0), d.validationRegistry))
             )
         );
+        assertEq(
+            d.agentClaimsGroth16Verifier,
+            script.predict(ns, "AgentClaimsGroth16Verifier", type(AgentClaimsGroth16Verifier).creationCode)
+        );
+        assertEq(
+            d.agentAttestationRegistry,
+            script.predict(
+                ns,
+                "AgentAttestationRegistry",
+                abi.encodePacked(type(AgentAttestationRegistry).creationCode, abi.encode(address(this), address(this)))
+            )
+        );
+        assertEq(
+            d.agentClaimsVerifier,
+            script.predict(
+                ns,
+                "AgentClaimsVerifier",
+                abi.encodePacked(
+                    type(AgentClaimsVerifier).creationCode,
+                    abi.encode(d.agentAttestationRegistry, d.agentClaimsGroth16Verifier)
+                )
+            )
+        );
+        assertEq(script.saltFor(ns, "AgentClaimsVerifier"), keccak256("agentbank.contracts.v1/AgentClaimsVerifier"));
     }
 
     /// @notice Modules without constructor args land at the same address on Anvil and Base Sepolia.
@@ -132,6 +179,9 @@ contract DeployScriptTest is Test {
         assertEq(anvil.topUpExecutor, sepolia.topUpExecutor);
         assertEq(anvil.paymentStreams, sepolia.paymentStreams);
         assertEq(anvil.timeLockVaults, sepolia.timeLockVaults);
+        assertEq(anvil.agentClaimsGroth16Verifier, sepolia.agentClaimsGroth16Verifier);
+        assertEq(anvil.agentAttestationRegistry, sepolia.agentAttestationRegistry, "same owner and attester");
+        assertEq(anvil.agentClaimsVerifier, sepolia.agentClaimsVerifier);
         assertTrue(anvil.agentEscrow != sepolia.agentEscrow, "escrow depends on the chain's registry");
     }
 }

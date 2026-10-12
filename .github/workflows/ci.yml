@@ -16,6 +16,9 @@ concurrency:
 env:
   # Keep in lockstep with the toolchain used to pin bytecode (see foundry.toml).
   FOUNDRY_VERSION: v1.8.4
+  # circom 2.2.3 from a pinned nixpkgs revision: the R1CS and WASM hashes in circuits/artifacts/manifest.json depend
+  # on the exact compiler.
+  CIRCOM: github:NixOS/nixpkgs/6510408d147d8c5e6d76043e899e9251756f6a75#circom
 
 jobs:
   fmt:
@@ -106,3 +109,27 @@ jobs:
           name: lcov
           path: lcov.info
           if-no-files-found: error
+      - name: Private-proofs contracts keep 100% line and function coverage
+        run: scripts/check-coverage.sh lcov.info src/AgentAttestationRegistry.sol src/AgentClaimsVerifier.sol
+
+  circuits:
+    name: Circuit artifacts and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: circuits
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: circuits/package-lock.json
+      - name: Install snarkjs, circomlib and poseidon-lite
+        run: npm ci
+      - name: Artifacts derive from the circuit (recompile, verify the zkey, re-export byte for byte)
+        run: nix shell "$CIRCOM" -c scripts/check.sh
+      - name: Circuit tests (completeness, soundness, binding)
+        run: npm test

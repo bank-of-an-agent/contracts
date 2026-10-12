@@ -4,6 +4,8 @@ pragma solidity 0.8.30;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Script, VmSafe, console2} from "forge-std/Script.sol";
 
+import {AgentAttestationRegistry} from "../src/AgentAttestationRegistry.sol";
+import {AgentClaimsVerifier} from "../src/AgentClaimsVerifier.sol";
 import {AgentEscrow} from "../src/AgentEscrow.sol";
 import {AgentPolicyHook} from "../src/AgentPolicyHook.sol";
 import {PaymentStreams} from "../src/PaymentStreams.sol";
@@ -13,6 +15,7 @@ import {TopUpExecutor} from "../src/TopUpExecutor.sol";
 import {MockTreasuryFund} from "../src/mocks/MockTreasuryFund.sol";
 import {MockUSDC} from "../src/mocks/MockUSDC.sol";
 import {MockValidationRegistry} from "../src/mocks/MockValidationRegistry.sol";
+import {AgentClaimsGroth16Verifier} from "../src/verifiers/AgentClaimsGroth16Verifier.sol";
 
 /// @title Deploy
 /// @notice Deterministic CREATE2 deployment of the Agent Bank contracts through the canonical deterministic-deployment
@@ -31,10 +34,14 @@ import {MockValidationRegistry} from "../src/mocks/MockValidationRegistry.sol";
 ///                                  address(0) disables the validator path)
 ///           DEPLOY_SALT_NAMESPACE  CREATE2 salt namespace (default "agentbank.contracts.v1")
 ///           MOCK_ADMIN             Anvil only: MockUSDC blacklister / MockTreasuryFund admin (default: script sender)
+///           PROOFS_REGISTRY_OWNER  AgentAttestationRegistry owner, a governance multisig (default: script sender)
+///           PROOFS_ATTESTER        Agent Bank's root-publishing attester key (default: script sender)
 /// @dev Addresses are a pure function of (factory, salt, init code). Init code = creation bytecode (pinned compiler and
-///      settings in foundry.toml, no CBOR metadata) + constructor args. AgentPolicyHook, SweepExecutor and
-///      TopUpExecutor have no constructor args, so their addresses are identical on every chain; AgentEscrow,
-///      PaymentStreams and TimeLockVaults also depend on PAUSE_GUARDIAN, and AgentEscrow on the registry.
+///      settings in foundry.toml, no CBOR metadata) + constructor args. AgentPolicyHook, SweepExecutor,
+///      TopUpExecutor and AgentClaimsGroth16Verifier have no constructor args, so their addresses are identical on
+///      every chain; AgentEscrow, PaymentStreams and TimeLockVaults also depend on PAUSE_GUARDIAN, AgentEscrow on the
+///      validation registry, and AgentAttestationRegistry (hence AgentClaimsVerifier) on PROOFS_REGISTRY_OWNER and
+///      PROOFS_ATTESTER.
 contract Deploy is Script {
     uint256 internal constant BASE_MAINNET = 8453;
     uint256 internal constant BASE_SEPOLIA = 84_532;
@@ -58,6 +65,11 @@ contract Deploy is Script {
         address timeLockVaults;
         address sweepExecutor;
         address topUpExecutor;
+        address proofsRegistryOwner;
+        address proofsAttester;
+        address agentClaimsGroth16Verifier;
+        address agentAttestationRegistry;
+        address agentClaimsVerifier;
     }
 
     /// @notice Deploys (or finds) every contract and records the addresses.
@@ -99,6 +111,7 @@ contract Deploy is Script {
         d.agentPolicyHook = _deploy(namespace, "AgentPolicyHook", type(AgentPolicyHook).creationCode);
         d.sweepExecutor = _deploy(namespace, "SweepExecutor", type(SweepExecutor).creationCode);
         d.topUpExecutor = _deploy(namespace, "TopUpExecutor", type(TopUpExecutor).creationCode);
+        _deployProofs(d, namespace);
         vm.stopBroadcast();
 
         _record(d, namespace);
@@ -126,6 +139,29 @@ contract Deploy is Script {
     function _guardChain() internal view {
         require(block.chainid != BASE_MAINNET, "MAINNET_LOCKED");
         require(block.chainid == BASE_SEPOLIA || block.chainid == ANVIL, "UNSUPPORTED_CHAIN");
+    }
+
+    /// @dev Private proofs: the generated Groth16 verifier, the root registry and the claims verifier wrapping both.
+    function _deployProofs(Deployment memory d, string memory namespace) internal {
+        d.proofsRegistryOwner = vm.envOr("PROOFS_REGISTRY_OWNER", msg.sender);
+        d.proofsAttester = vm.envOr("PROOFS_ATTESTER", msg.sender);
+        d.agentClaimsGroth16Verifier =
+            _deploy(namespace, "AgentClaimsGroth16Verifier", type(AgentClaimsGroth16Verifier).creationCode);
+        d.agentAttestationRegistry = _deploy(
+            namespace,
+            "AgentAttestationRegistry",
+            abi.encodePacked(
+                type(AgentAttestationRegistry).creationCode, abi.encode(d.proofsRegistryOwner, d.proofsAttester)
+            )
+        );
+        d.agentClaimsVerifier = _deploy(
+            namespace,
+            "AgentClaimsVerifier",
+            abi.encodePacked(
+                type(AgentClaimsVerifier).creationCode,
+                abi.encode(d.agentAttestationRegistry, d.agentClaimsGroth16Verifier)
+            )
+        );
     }
 
     function _escrowInitCode(address pauseGuardian, address registry) internal pure returns (bytes memory) {
@@ -159,7 +195,10 @@ contract Deploy is Script {
         vm.serializeAddress(contracts, "AgentPolicyHook", d.agentPolicyHook);
         vm.serializeAddress(contracts, "TimeLockVaults", d.timeLockVaults);
         vm.serializeAddress(contracts, "SweepExecutor", d.sweepExecutor);
-        string memory contractsJson = vm.serializeAddress(contracts, "TopUpExecutor", d.topUpExecutor);
+        vm.serializeAddress(contracts, "TopUpExecutor", d.topUpExecutor);
+        vm.serializeAddress(contracts, "AgentClaimsGroth16Verifier", d.agentClaimsGroth16Verifier);
+        vm.serializeAddress(contracts, "AgentAttestationRegistry", d.agentAttestationRegistry);
+        string memory contractsJson = vm.serializeAddress(contracts, "AgentClaimsVerifier", d.agentClaimsVerifier);
 
         string memory deps = "dependencies";
         vm.serializeAddress(deps, "USDC", d.usdc);
@@ -172,6 +211,8 @@ contract Deploy is Script {
         vm.serializeAddress(root, "create2Factory", CREATE2_FACTORY);
         vm.serializeString(root, "saltNamespace", namespace);
         vm.serializeAddress(root, "pauseGuardian", d.pauseGuardian);
+        vm.serializeAddress(root, "proofsRegistryOwner", d.proofsRegistryOwner);
+        vm.serializeAddress(root, "proofsAttester", d.proofsAttester);
         vm.serializeString(root, "dependencies", depsJson);
         string memory json = vm.serializeString(root, "contracts", contractsJson);
 
