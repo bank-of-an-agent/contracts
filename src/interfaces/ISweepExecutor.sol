@@ -39,6 +39,7 @@ interface ISweepExecutor {
     error NothingToSweep(address account);
     error NothingToRedeem(address account);
     error UnexpectedSharesMinted(uint256 expected, uint256 received);
+    error SubscriptionLossTooHigh(uint256 assets, uint256 sharesValue);
     error UnexpectedAssetsReceived(uint256 expected, uint256 received);
 
     /// @notice Replaces the caller's sweep rule.

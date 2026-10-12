@@ -22,6 +22,8 @@ contract VaultsHandler is Test {
     uint256 public ghostMinted;
     uint256 public ghostDonated;
     uint256 public ghostUnsignedEarlyWithdrawals; // must stay 0
+    uint256 public ghostNonOwnerSignatureAccepted; // must stay 0
+    uint256 public ghostOwnerSignatureRejected; // must stay 0
     mapping(uint256 id => uint256) public ghostDeposited;
     mapping(uint256 id => uint256) public ghostWithdrawn;
     mapping(bytes32 action => uint256) public calls;
@@ -91,12 +93,13 @@ contract VaultsHandler is Test {
         bytes32 digest = vaults.earlyWithdrawalDigest(id, amount, v.nonce, deadline);
         (uint8 sv, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         vm.prank(relayer);
+        // Violations are recorded, not asserted here: a failing assert would only revert this handler call.
         try vaults.withdrawWithSignature(id, amount, deadline, abi.encodePacked(r, s, sv)) {
-            assertTrue(byOwner, "a non-owner signature withdrew funds");
+            if (!byOwner) ghostNonOwnerSignatureAccepted++;
             ghostWithdrawn[id] += amount;
             calls["withdrawSigned"]++;
         } catch {
-            assertFalse(byOwner, "the owner's signature was rejected");
+            if (byOwner) ghostOwnerSignatureRejected++;
             calls["withdrawSigned.rejected"]++;
         }
     }
@@ -203,8 +206,11 @@ contract TimeLockVaultsInvariantTest is BaseTest {
         assertEq(held, handler.ghostMinted());
     }
 
-    /// @notice Nothing ever left a vault before its unlock time without the owner's signature.
-    function invariant_noUnsignedEarlyWithdrawal() public view {
+    /// @notice Nothing ever left a vault before its unlock time without the owner's signature; only the current
+    ///         owner's signatures are honoured, and they always are.
+    function invariant_onlyOwnerUnlocksEarly() public view {
         assertEq(handler.ghostUnsignedEarlyWithdrawals(), 0);
+        assertEq(handler.ghostNonOwnerSignatureAccepted(), 0);
+        assertEq(handler.ghostOwnerSignatureRejected(), 0);
     }
 }

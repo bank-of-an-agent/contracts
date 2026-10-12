@@ -34,3 +34,39 @@ contract FakeFund {
         asset = asset_;
     }
 }
+
+/// @notice ERC-4626 that calls back into an arbitrary target during deposits/withdrawals (reentrancy probe).
+contract ReentrantFund is ERC4626 {
+    address public target;
+    bytes public data;
+
+    constructor(IERC20 asset_) ERC20("Reentrant Fund", "REENT") ERC4626(asset_) {}
+
+    function setCallback(address target_, bytes calldata data_) external {
+        target = target_;
+        data = data_;
+    }
+
+    function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
+        _callback();
+        super._deposit(caller, receiver, assets, shares);
+    }
+
+    function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares)
+        internal
+        override
+    {
+        _callback();
+        super._withdraw(caller, receiver, owner, assets, shares);
+    }
+
+    function _callback() private {
+        if (target == address(0)) return;
+        (bool ok, bytes memory ret) = target.call(data);
+        if (!ok) {
+            assembly ("memory-safe") {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+    }
+}
