@@ -104,3 +104,39 @@ contract ReverseTransferToken is ERC20 {
         return true;
     }
 }
+
+/// @notice Misbehaves only on `transfer`s to `target`, in one of several ways, to exercise balance-checked payouts.
+contract WeirdTransferToken is ERC20 {
+    enum Mode {
+        Normal,
+        MovesButReturnsFalse,
+        ReturnsTrueWithoutMoving,
+        DebitsTwice
+    }
+
+    Mode public mode;
+    address public target;
+
+    constructor() ERC20("Weird Token", "WEIRD") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setMisbehaviour(address target_, Mode mode_) external {
+        target = target_;
+        mode = mode_;
+    }
+
+    function transfer(address to, uint256 value) public override returns (bool) {
+        if (to != target || mode == Mode.Normal) return super.transfer(to, value);
+        if (mode == Mode.MovesButReturnsFalse) {
+            super.transfer(to, value);
+            return false;
+        }
+        if (mode == Mode.ReturnsTrueWithoutMoving) return true;
+        _transfer(msg.sender, to, value);
+        _transfer(msg.sender, address(0xdead), value); // DebitsTwice
+        return true;
+    }
+}

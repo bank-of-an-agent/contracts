@@ -83,7 +83,7 @@ contract TimeLockVaults is ITimeLockVaults, EIP712, GuardianPausable, Reentrancy
         totalHeld[token] += amount;
         emit Deposited(id, msg.sender, amount, newBalance);
 
-        TokenTransfer.pullExact(token, msg.sender, amount);
+        TokenTransfer.pullExact(token, amount);
     }
 
     /// @notice Returns `amount` to the parent account once the vault is unlocked. Callable by anyone.

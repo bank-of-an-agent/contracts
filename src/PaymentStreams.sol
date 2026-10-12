@@ -80,7 +80,7 @@ contract PaymentStreams is IPaymentStreams, GuardianPausable, ReentrancyGuardTra
         totalOutstanding[token] += deposit;
         emit StreamCreated(id, msg.sender, payee, token, deposit, amountPerInterval, interval, effectiveStart, stop);
 
-        TokenTransfer.pullExact(token, msg.sender, deposit);
+        TokenTransfer.pullExact(token, deposit);
     }
 
     /// @notice Adds `amount` to a live stream's deposit, pulled from the payer.
@@ -104,7 +104,7 @@ contract PaymentStreams is IPaymentStreams, GuardianPausable, ReentrancyGuardTra
         totalOutstanding[token] += amount;
         emit StreamToppedUp(id, msg.sender, amount, newDeposit);
 
-        TokenTransfer.pullExact(token, msg.sender, amount);
+        TokenTransfer.pullExact(token, amount);
     }
 
     /// @notice Pays everything accrued but not yet paid to the payee. Callable by anyone (keepers).
@@ -160,7 +160,7 @@ contract PaymentStreams is IPaymentStreams, GuardianPausable, ReentrancyGuardTra
             // forge-lint: disable-next-line(unsafe-typecast)
             s.paid = uint128(accruedNow);
             totalOutstanding[token] -= owed;
-            if (IERC20(token).trySafeTransfer(payee, owed)) {
+            if (TokenTransfer.tryPushExact(token, payee, owed)) {
                 payeeAmount = owed;
                 emit StreamSettled(id, payee, msg.sender, token, owed);
             } else {

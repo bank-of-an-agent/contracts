@@ -7,7 +7,7 @@ import {PaymentStreams} from "../../src/PaymentStreams.sol";
 import {IPaymentStreams} from "../../src/interfaces/IPaymentStreams.sol";
 import {GuardianPausable} from "../../src/utils/GuardianPausable.sol";
 import {TokenTransfer} from "../../src/utils/TokenTransfer.sol";
-import {CallbackToken, FeeOnTransferToken} from "../mocks/TestTokens.sol";
+import {CallbackToken, FeeOnTransferToken, WeirdTransferToken} from "../mocks/TestTokens.sol";
 import {BaseTest} from "../utils/BaseTest.sol";
 
 contract PaymentStreamsTest is BaseTest {
@@ -387,6 +387,50 @@ contract PaymentStreamsTest is BaseTest {
         streams.cancel(id);
         streams.settle(id);
         assertEq(usdc.balanceOf(payee), 100 * RATE);
+    }
+
+    // ------------------------------------------------------------------ misbehaving tokens on payout
+
+    function _weirdStream(WeirdTransferToken.Mode mode) internal returns (WeirdTransferToken token, uint256 id) {
+        token = new WeirdTransferToken();
+        token.mint(payer, 10_000);
+        vm.startPrank(payer);
+        token.approve(address(streams), 10_000);
+        id = streams.createStream(address(token), payee, 10_000, 1, 1, 0, 0);
+        vm.stopPrank();
+        vm.warp(block.timestamp + 100); // 100 owed to the payee
+        token.setMisbehaviour(payee, mode);
+    }
+
+    /// @notice A token that pays but reports failure must not lead to a second payment.
+    function test_cancel_tokenPaysButReturnsFalse_neverDoublePays() public {
+        (WeirdTransferToken token, uint256 id) = _weirdStream(WeirdTransferToken.Mode.MovesButReturnsFalse);
+        vm.prank(payer);
+        (uint256 toPayee,) = streams.cancel(id);
+        assertEq(toPayee, 100);
+        assertEq(token.balanceOf(payee), 100);
+        assertEq(streams.settleable(id), 0, "nothing left to claim");
+        assertEq(streams.outstanding(id), 0);
+    }
+
+    /// @notice A token that reports success without paying must not mark the debt as settled.
+    function test_cancel_tokenReturnsTrueWithoutPaying_defers() public {
+        (WeirdTransferToken token, uint256 id) = _weirdStream(WeirdTransferToken.Mode.ReturnsTrueWithoutMoving);
+        vm.expectEmit(true, true, false, true, address(streams));
+        emit IPaymentStreams.StreamSettlementDeferred(id, payee, 100);
+        vm.prank(payer);
+        (uint256 toPayee,) = streams.cancel(id);
+        assertEq(toPayee, 0);
+        assertEq(token.balanceOf(payee), 0);
+        assertEq(streams.settleable(id), 100, "still owed");
+        assertEq(token.balanceOf(address(streams)), 100);
+    }
+
+    function test_cancel_tokenDebitsWrongAmount_reverts() public {
+        (WeirdTransferToken token, uint256 id) = _weirdStream(WeirdTransferToken.Mode.DebitsTwice);
+        vm.prank(payer);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfer.TransferAmountMismatch.selector, address(token), 100, 200));
+        streams.cancel(id);
     }
 
     // ------------------------------------------------------------------ pause guardian

@@ -102,7 +102,7 @@ contract AgentEscrow is IAgentEscrow, GuardianPausable, ReentrancyGuardTransient
         totalLocked[token] += amount;
         emit Locked(id, msg.sender, payee, token, amount, expiresAt, arbiter, termsHash);
 
-        TokenTransfer.pullExact(token, msg.sender, amount);
+        TokenTransfer.pullExact(token, amount);
     }
 
     /// @notice Pays the full escrowed amount to the payee.
@@ -111,16 +111,10 @@ contract AgentEscrow is IAgentEscrow, GuardianPausable, ReentrancyGuardTransient
     function release(uint256 id) external nonReentrant {
         Escrow storage e = _escrows[id];
         _requireOpen(id, e.status);
-        ReleaseReason reason;
-        if (msg.sender == e.payer) {
-            reason = ReleaseReason.PayerApproval;
-        } else if (msg.sender == e.arbiter) {
-            // e.arbiter == address(0) can never match msg.sender
-            reason = ReleaseReason.ArbiterDecision;
-        } else {
-            revert Unauthorized(msg.sender);
-        }
-        _release(id, e, reason);
+        address payer = e.payer;
+        // e.arbiter == address(0) can never match msg.sender
+        if (msg.sender != payer && msg.sender != e.arbiter) revert Unauthorized(msg.sender);
+        _release(id, e, msg.sender == payer ? ReleaseReason.PayerApproval : ReleaseReason.ArbiterDecision);
     }
 
     /// @notice Pays the payee once the configured ERC-8004 validator approved the request. Callable by anyone.
