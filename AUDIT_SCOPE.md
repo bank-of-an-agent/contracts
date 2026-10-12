@@ -14,16 +14,16 @@ Agent Bank is a non-custodial bank for AI agents. Each agent owns an ERC-7579 sm
 
 | File | nSLOC | Purpose |
 | --- | ---: | --- |
-| `src/AgentEscrow.sol` | 204 | Singleton multi-escrow. Lock, release by payer or arbiter, ERC-8004 validator release, refund, dispute/resolve, dispute-timeout liveness refund |
+| `src/AgentEscrow.sol` | 198 | Singleton multi-escrow. Lock, release by payer or arbiter, ERC-8004 validator release, refund, dispute/resolve, dispute-timeout liveness refund |
 | `src/PaymentStreams.sol` | 136 | Pre-funded per-second streams and recurring payments: `accrued = min(deposit, floor(elapsed/interval)·rate)` |
 | `src/TimeLockVaults.sol` | 121 | Time-locked savings vaults. Withdrawals only to the parent account; early withdrawal needs the owner's EIP-712 signature |
 | `src/AgentPolicyHook.sol` | 329 | ERC-7579 hook (type 4): per-token per-transaction and per-UTC-day caps, allowlists, fail-closed targets |
 | `src/SweepExecutor.sol` | 124 | ERC-7579 executor (type 2): owner-directed sweep of excess into an ERC-4626 fund, and redemption to keep a liquid floor |
 | `src/TopUpExecutor.sol` | 134 | ERC-7579 executor (type 2): keeper-triggered refills from the org treasury to configured agent accounts |
 | `src/utils/GuardianPausable.sol` | 44 | Inflow-only pause guardian |
-| `src/utils/TokenTransfer.sol` | 27 | Exact-amount pull and balance-checked push helpers |
+| `src/utils/TokenTransfer.sol` | 25 | Exact-amount pull and balance-checked push helpers |
 | `src/interfaces/*.sol` | 415 | Interfaces, events, errors and types; minimal ERC-7579 and ERC-8004 definitions |
-| **Total** | **1,534** | |
+| **Total** | **1,526** | |
 
 **Out of scope:** `src/mocks/*` (MockUSDC, MockTreasuryFund, MockValidationRegistry: local and Anvil fixtures only, never deployed elsewhere), `test/**`, and `script/Deploy.s.sol`. The deploy script's chain guards are tested in `test/script/Deploy.t.sol`.
 
@@ -43,7 +43,7 @@ Design rule: *no contract, admin function or upgrade path may let Agent Bank, or
 | Contract | Funds can only go to | Who can trigger it | Bank powers |
 | --- | --- | --- | --- |
 | AgentEscrow | the escrow's **payer** or **payee** | payer and arbiter (release); anyone, if the payer-chosen validator approved before expiry; payee (refund any time); anyone (refund after expiry, or after a dispute timeout); arbiter (split, only between payer and payee) | pause new `lock`s |
-| PaymentStreams | the stream's **payee** (accrued amount) or **payer** (remainder) | anyone (`settle`); payer or payee (`cancel`) | pause new streams and top-ups |
+| PaymentStreams | the stream's **payee** (accrued amount) or **payer** (remainder) | anyone (`settle`); **payer only** (`cancel`, `topUp`) | pause new streams and top-ups |
 | TimeLockVaults | the vault's **parent account** | anyone after `unlockAt`; anyone holding the owner's EIP-712 signature before it | pause deposits |
 | AgentPolicyHook | holds nothing; only restricts the account's own executions | — | none |
 | SweepExecutor | between the account and the **owner-chosen fund**; shares and redemptions always go to the account | anyone (keeper), within the owner's rule | none |
@@ -64,7 +64,10 @@ The owner's exit path is the Safe's native `execTransaction`. ERC-7579 hooks nev
 | **ERC-8004 Validation Registry** (`0x8004Cb1B…4272` on Base Sepolia; a UUPS proxy) | Reporting validator responses honestly. Its upgrade admin could forge responses, which could release opted-in escrows **to their payees** early. | Payers who do not opt into validation are unaffected. |
 | **USDC / FiatToken** (upgradeable; Circle can blacklist and pause) | Standard ERC-20 behaviour. If Circle blacklists an address, payouts to that address are frozen (§6.6); if it blacklists a contract, all funds in it are frozen. | — |
 | **ERC-4626 fund** (chosen by the owner for SweepExecutor) | A NAV that cannot be manipulated within one transaction, since sweep and redeem are permissionless (§6.5). Its share accounting is checked by measured deltas. | Minting or paying less than promised (both checked). Losing more than 0.1% to share-price rounding (checked). |
+| **Guardian recovery**: Candide SocialRecoveryModule v0.0.1, 72 h variant `0x38275826…541c` (external; audited by Ackee, Nethermind on the Safe-vendored version; Certora specs) | Rotating the Safe owner after 72 h when the guardian threshold confirms. The owner can cancel during the delay, and a guardian can never become an owner. **Agent Bank holds at most one guardian seat, with threshold ≥ 2 and threshold > guardians/2.** That policy is enforced at provisioning and by monitoring, not by the module (ADR 0002; `test/fork/CandideSocialRecovery.fork.t.sol`). | Acting alone: Agent Bank's seat can never reach the threshold. |
 | **ERC-7579 account implementation** (Safe7579) | Passing the full `msg.data` to `preCheck`; enforcing that only installed executors can call `executeFromExecutor`; decoding executions per the spec | — |
+| **Smart Sessions** (session-key validator; the first on-chain spend layer) | Enforcing the session scope that `AgentPolicyHook` backs up. **Use Smart Sessions V1 at `0x00000000008bDABA…`**, verified by the chain integration package on a Base Sepolia fork. The `0x00000000002B0eCf…` deployment is the pre-V1 beta and must not be used. Agent sessions must have no ERC-1271 policies and no actions targeting the account itself (§6.1, §6.2). | — |
+| **ERC-7484 module registry** (Safe7579 `setRegistry`) | Not relied on. The hook and both executors are **not attested** in the module registry. Accounts must therefore disable the registry check before installing them: `setRegistry(address(0), [], 0)`, the chain package's `disableModuleRegistry` step. With the registry off, module vetting rests on the owner and these audits rather than on attestations, and that applies to every module the owner installs later (§6.12). | — |
 
 ## 4. Invariants (all tested)
 
@@ -82,6 +85,8 @@ Unit tests check exact behaviour. Fuzz tests check the properties below over ran
 | S3 | `balanceOf(streams) == Σ outstanding + donations` and `totalOutstanding == Σ outstanding` | `invariant_balanceEqualsSumOfOutstanding` |
 | S4 | The accrual formula matches the reference for any parameters; cancel splits the deposit exactly | `testFuzz_accrual_matchesFormula`, `testFuzz_cancel_conservesDeposit` |
 | S5 | A frozen payee never traps the payer's refund; a frozen payer never stops the payee's settlement | `test_cancel_blacklisted*`, plus the freeze-toggling handler action |
+| S6 | Only the payer ever cancels or tops up a stream: an agent can never be made to fund someone else's stream | `invariant_onlyPayerCancelsOrTopsUp`, `PaymentStreams.t.sol` · `testFuzz_accessControlMatrix` |
+| E6 | Access-control matrix (fuzzed callers): `release` payer or arbiter only; `dispute` payer or payee only, before expiry; `resolve` arbiter only; refund before expiry payee only (refunds always go to the payer) | `AgentEscrow.t.sol` · `testFuzz_accessControlMatrix` |
 | V1 | `balanceOf(vaults) == totalHeld + donations` and each vault's balance equals deposits − withdrawals | `TimeLockVaults.invariant` · `invariant_accounting` |
 | V2 | Withdrawals only ever reach the vault's parent account | `invariant_fundsOnlyReturnToParentAccounts` |
 | V3 | No withdrawal before `unlockAt` without the current owner's signature; the owner's signature is always honoured | `invariant_onlyOwnerUnlocksEarly` |
@@ -100,7 +105,7 @@ Unit tests check exact behaviour. Fuzz tests check the properties below over ran
 1. **Escrow `lock` takes a 9th argument, `validationThreshold`** (1..100). It sits between `validationRequestHash` and `termsHash`. A threshold of 0 is rejected when a validator is set, because the ERC-8004 registry exposes no "has responded" flag, so 0 would accept an unanswered request.
 2. **Validation release rules.** The registry's `validatorAddress` for the request hash must equal the escrow's validator; this defeats a payee front-running the request with a validator it controls. The latest response must be `≥ threshold`. The response must not predate the escrow (`lastUpdate ≥ createdAt`); this defeats replay of a stale validation. Release only happens while Active and strictly before `expiresAt`, so validation release and the expiry refund are mutually exclusive in time. A dispute suspends the validator path.
 3. **Escrow parameter sanity.** The arbiter must differ from payer and payee. The validator must differ from the payee (no self-validation). Expiry must fall within (now, now + 365 days]. Disputes require an arbiter.
-4. **Streams.** Accrual is in arrears (nothing is payable before `start + interval`). `start` cannot be in the past. Only the payer can top up, so nobody can route funds into someone else's stream. A top-up after a stream ran dry pays the unfunded periods at once (a debt clock). `cancel` may be called by payer or payee. Its payee payout is balance-checked (`tryPushExact`): a token that pays but reports failure cannot cause a double payment, and a token that reports success without paying cannot mark the debt settled.
+4. **Streams.** Accrual is in arrears (nothing is payable before `start + interval`). `start` cannot be in the past. **Only the payer can top up or cancel**: nobody can route funds into someone else's stream, and the payee cannot end a stream. A top-up after a stream ran dry pays the unfunded periods at once (a debt clock). Its payee payout is balance-checked (`tryPushExact`): a token that pays but reports failure cannot cause a double payment, and a token that reports success without paying cannot mark the debt settled.
 5. **Vaults.** The owner can never be the parent account. Otherwise any key with ERC-1271 rights on the account, such as a session key, could sign early withdrawals. `MAX_LOCK_DURATION` is 3,650 days. Re-signing `setOwner` for the same owner invalidates outstanding signatures.
 6. **Hook config through the hooked path is blocked** (`HookCallBlocked`). The owner configures the hook at install time or through the Safe's native `execTransaction`. Calls with `target == account` are allowed (module management), as the brief requires.
 7. **Hook fail-closed target rules.** A call may target only: the account itself; a configured token, with `transfer`, `transferFrom`, `approve`, `increaseAllowance` or `decreaseAllowance`; an allowlisted contract; or an address receiving plain native value. Everything else reverts, including delegatecall, staticcall, custom mode selectors and unknown exec types.
@@ -121,6 +126,8 @@ Unit tests check exact behaviour. Fuzz tests check the properties below over ran
 9. **Fund NAV manipulation.** SweepExecutor bounds rounding loss, but a fund whose price can be moved and restored within one block could still be sandwiched. Owners must select funds with oracle- or NAV-based pricing.
 10. **Counterfactual owners.** TimeLockVaults signature checks support EOAs and *deployed* ERC-1271 contracts. ERC-6492 is not supported, and EIP-7702-delegated EOAs are validated through their delegate's ERC-1271.
 11. **Validation registry draft.** The ERC-8004 Validation Registry spec is still a draft and the reference registry is upgradeable. If its interface changes, `releaseByValidation` reverts; every other path is unaffected.
+12. **Module registry disabled.** Our modules are not attested in the ERC-7484 registry, so accounts install them only after disabling Safe7579's registry check (`disableModuleRegistry`). Until they are attested, and the registry is re-enabled with Agent Bank's attester, Safe7579 does not block an unvetted module the owner installs. The owner's signature is still required for every install.
+13. **Recovery policy is off-chain.** Candide's SocialRecoveryModule does not enforce "threshold > n/2" or "Agent Bank holds at most one seat". Provisioning enforces those rules and monitoring alerts on any guardian change that breaks them. The owner can re-configure guardians with their own signature (ADR 0002). The deployed bytecode (v0.0.1) should be checked against Ackee's audited commit during the audit.
 
 ## 7. Static analysis
 
@@ -157,14 +164,14 @@ Every other suppression is inline with a justification. They cover:
 forge build --sizes                                                   # all deployables < 12 KB
 forge test                                                            # unit + fuzz (1k runs) + invariant (256 x 100)
 FOUNDRY_PROFILE=ci forge test                                         # fuzz 10k runs, invariant 1k x 200
-FOUNDRY_PROFILE=fork forge test -vv                                   # Base Sepolia spike (needs RPC; skips if none)
+FOUNDRY_PROFILE=fork forge test -vv                                   # Base Sepolia fork tests (needs RPC; skips if none)
 forge coverage --report summary --no-match-coverage '^(test|script)/' # src/ coverage
 ```
 
 At the time of writing:
 
-- **247 tests** pass under the default and `ci` profiles: unit, fuzz, 12 invariant suites, deploy-script tests and the local spike companions.
-- The fork spike passes **14 tests** on Base Sepolia.
+- **254 tests** pass under the default and `ci` profiles: unit, fuzz, 12 invariant suites, deploy-script tests and the local spike companions.
+- **21 fork tests** pass on Base Sepolia, both at the pinned block and at chain head: 14 for the x402 spike and 7 for guardian recovery.
 - `src/` coverage is **100% of lines, statements, branches and functions**.
 
 ## 9. Deployment determinism
