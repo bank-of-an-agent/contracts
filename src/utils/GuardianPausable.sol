@@ -34,7 +34,8 @@ abstract contract GuardianPausable {
     }
 
     modifier onlyPauseGuardian() {
-        if (msg.sender != _pauseGuardian) revert NotPauseGuardian(msg.sender);
+        // A renounced (zero) guardian means nobody, even for a hypothetical msg.sender of address(0).
+        if (msg.sender != _pauseGuardian || msg.sender == address(0)) revert NotPauseGuardian(msg.sender);
         _;
     }
 
