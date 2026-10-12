@@ -103,8 +103,9 @@ forge script script/Deploy.s.sol --rpc-url https://sepolia.base.org   # simulati
 ```
 
 Nothing has been broadcast yet. Choose the `PAUSE_GUARDIAN` before broadcasting; it changes the
-escrow, streams and vaults addresses. Likewise `PROOFS_REGISTRY_OWNER` and `PROOFS_ATTESTER`
-(both default to the script sender) change the registry and claims-verifier addresses. Deployments are written to `deployments/<chainId>.json`.
+escrow, streams and vaults addresses. Likewise, `PROOFS_REGISTRY_OWNER` and `PROOFS_ATTESTER`
+(both default to the script sender) change the registry and claims-verifier addresses.
+Deployments are written to `deployments/<chainId>.json`.
 
 ## Repository layout
 
@@ -127,7 +128,10 @@ abis/               ABIs consumed by the TypeScript and exit-tool packages
 
 - [`agent-bank`](https://github.com/bank-of-an-agent/agent-bank): `packages/chain` copies `abis/`
   (`scripts/sync-abis.sh`) and builds the calls; the API, co-signer and reconciler work from the
-  events these contracts emit.
+  events these contracts emit. `packages/proofs` copies `circuits/artifacts` (`sync-circuits`,
+  hash-checked against the manifest) to prove and verify off-chain.
+- [`sdk-python`](https://github.com/bank-of-an-agent/sdk-python): bundles the circuit's
+  verification key to verify proofs in pure Python.
 - [`exit-tool`](https://github.com/bank-of-an-agent/exit-tool): refunds expired escrows, cancels
   streams and withdraws vaults when an owner leaves without Agent Bank.
 
