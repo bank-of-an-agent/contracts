@@ -18,8 +18,8 @@ verify cheaply both off-chain (SDKs) and on-chain (contracts that admit agents),
    disclosure mask that forces unconstrained bounds on undisclosed attributes, a per-scope
    nullifier, and a bound nonce. 10,270 constraints; 30 public signals.
 2. **Proof system:** Groth16 on BN254. Proofs are 256 bytes, verification uses the EVM's BN254
-   precompiles (about 410,000 gas through `AgentClaimsVerifier` with 30 public inputs) and snarkjs proves in about 1.3 s.
-   PLONK/fflonk would avoid a circuit-specific setup but cost more gas and prover time; Noir
+   precompiles (about 410,000 gas through `AgentClaimsVerifier` with 30 public inputs) and
+   snarkjs proves in about 1.3 s. PLONK/fflonk would avoid a circuit-specific setup but cost more gas and prover time; Noir
    with UltraHonk is attractive but its Solidity verifier is far more expensive and its tooling
    downloads parameters at run time.
 3. **Trusted setup, testnet:** a single-party ceremony (`circuits/scripts/ceremony.sh`): local
