@@ -170,7 +170,7 @@ forge coverage --report summary --no-match-coverage '^(test|script)/' # src/ cov
 
 At the time of writing:
 
-- **254 tests** pass under the default and `ci` profiles: unit, fuzz, 12 invariant suites, deploy-script tests and the local spike companions.
+- **254 tests** pass under the default and `ci` profiles: 221 unit tests (including deploy-script tests and the local spike companions), 23 fuzz tests, and 10 handler-based invariant suites covering 25 invariant properties.
 - **21 fork tests** pass on Base Sepolia, both at the pinned block and at chain head: 14 for the x402 spike and 7 for guardian recovery.
 - `src/` coverage is **100% of lines, statements, branches and functions**.
 
