@@ -85,6 +85,16 @@ override_spacing = false
 contract_new_lines = false
 single_line_statement_blocks = "preserve"
 
+[lint]
+severity = ["high", "medium", "low"]
+# block-timestamp: escrow expiry, stream accrual, vault unlocks and daily caps are time-based by design; the few
+# seconds of influence a sequencer/validator has over block.timestamp is irrelevant at these granularities.
+# require-revert-in-loop: a policy check must abort the whole batch when any execution in it violates the policy.
+exclude_lints = ["block-timestamp", "require-revert-in-loop"]
+# Lint production code and scripts only.
+ignore = ["test/**", "lib/**"]
+lint_on_build = true
+
 [rpc_endpoints]
 # Public endpoint (not a secret). Override per command with --rpc-url / BASE_SEPOLIA_RPC_URL.
 base_sepolia = "https://sepolia.base.org"
