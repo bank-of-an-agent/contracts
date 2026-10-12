@@ -11,7 +11,15 @@ import {IAgentPolicyHook} from "../../src/interfaces/IAgentPolicyHook.sol";
 import {MODULE_TYPE_EXECUTOR, MODULE_TYPE_HOOK} from "../../src/interfaces/IERC7579.sol";
 import {ISweepExecutor} from "../../src/interfaces/ISweepExecutor.sol";
 import {MockTreasuryFund} from "../../src/mocks/MockTreasuryFund.sol";
-import {FakeFund, ReentrantFund, ShortMintFund, ShortRedeemFund} from "../mocks/MaliciousFunds.sol";
+import {
+    FakeFund,
+    LossyFund,
+    NoPayFund,
+    ReentrantFund,
+    ShortMintFund,
+    ShortRedeemFund,
+    ZeroMintFund
+} from "../mocks/MaliciousFunds.sol";
 import {MockERC7579Account} from "../mocks/MockERC7579Account.sol";
 import {TestToken} from "../mocks/TestTokens.sol";
 import {BaseTest} from "../utils/BaseTest.sol";
@@ -246,6 +254,36 @@ contract SweepExecutorTest is BaseTest {
         (bool ok, bytes memory ret) = address(sweeper).call(abi.encodeCall(SweepExecutor.sweep, (address(treasury))));
         assertFalse(ok);
         assertEq(bytes4(ret), ISweepExecutor.SubscriptionLossTooHigh.selector);
+    }
+
+    function test_sweep_rejectsFundThatMintsNothing() public {
+        ZeroMintFund bad = new ZeroMintFund(IERC20(address(usdc)));
+        _setConfig(_config(address(bad), FLOOR, THRESHOLD, MAX_BPS));
+        _fund(address(treasury), 5000 * USDC_UNIT);
+        vm.expectRevert(abi.encodeWithSelector(ISweepExecutor.UnexpectedSharesMinted.selector, 4000 * USDC_UNIT, 0));
+        sweeper.sweep(address(treasury));
+    }
+
+    function test_redeem_rejectsFundThatPaysNothing() public {
+        NoPayFund bad = new NoPayFund(IERC20(address(usdc)));
+        _setConfig(_config(address(bad), FLOOR, THRESHOLD, MAX_BPS));
+        _fund(address(treasury), 5000 * USDC_UNIT);
+        sweeper.sweep(address(treasury));
+        _spend(FLOOR);
+        vm.expectRevert(abi.encodeWithSelector(ISweepExecutor.UnexpectedAssetsReceived.selector, 1000 * USDC_UNIT, 0));
+        sweeper.redeem(address(treasury));
+    }
+
+    function test_redeem_worthlessSharesAreNotRedeemed() public {
+        LossyFund lossy = new LossyFund(IERC20(address(usdc)));
+        _setConfig(_config(address(lossy), FLOOR, THRESHOLD, MAX_BPS));
+        _fund(address(treasury), 5000 * USDC_UNIT);
+        sweeper.sweep(address(treasury));
+        lossy.loseEverything();
+        _spend(FLOOR);
+        assertEq(sweeper.previewRedeem(address(treasury)), 0);
+        vm.expectRevert(abi.encodeWithSelector(ISweepExecutor.NothingToRedeem.selector, address(treasury)));
+        sweeper.redeem(address(treasury));
     }
 
     function test_sweep_nonErc4626FundReverts() public {

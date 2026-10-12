@@ -89,3 +89,18 @@ contract CallbackToken is ERC20 {
         }
     }
 }
+
+/// @notice Pathological token: `transferFrom(from, to, v)` moves `v` from `to` back to `from`, so the receiver's
+///         balance shrinks. Exact-amount pulls must reject it.
+contract ReverseTransferToken is ERC20 {
+    constructor() ERC20("Reverse Token", "REV") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function transferFrom(address from, address to, uint256 value) public override returns (bool) {
+        _transfer(to, from, value);
+        return true;
+    }
+}

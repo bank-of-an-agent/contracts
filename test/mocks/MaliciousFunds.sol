@@ -70,3 +70,31 @@ contract ReentrantFund is ERC4626 {
         }
     }
 }
+
+/// @notice ERC-4626 that takes the assets but mints no shares.
+contract ZeroMintFund is ERC4626 {
+    constructor(IERC20 asset_) ERC20("Zero Mint Fund", "ZERO") ERC4626(asset_) {}
+
+    function _deposit(address caller, address receiver, uint256 assets, uint256) internal override {
+        super._deposit(caller, receiver, assets, 0);
+    }
+}
+
+/// @notice ERC-4626 that burns shares on redeem but pays nothing.
+contract NoPayFund is ERC4626 {
+    constructor(IERC20 asset_) ERC20("No Pay Fund", "NOPAY") ERC4626(asset_) {}
+
+    function _withdraw(address caller, address receiver, address owner, uint256, uint256 shares) internal override {
+        super._withdraw(caller, receiver, owner, 0, shares);
+    }
+}
+
+/// @notice ERC-4626 whose assets can be wiped out (simulates a fund loss that makes shares worthless).
+contract LossyFund is ERC4626 {
+    constructor(IERC20 asset_) ERC20("Lossy Fund", "LOSS") ERC4626(asset_) {}
+
+    function loseEverything() external {
+        IERC20 token = IERC20(asset());
+        token.transfer(address(0xdead), token.balanceOf(address(this)));
+    }
+}

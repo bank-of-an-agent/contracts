@@ -188,6 +188,20 @@ contract TopUpExecutorTest is BaseTest {
         topUps.topUp(address(treasury), agent);
     }
 
+    function test_previewTopUp_zeroWithoutInstallOrRule() public view {
+        assertEq(topUps.previewTopUp(stranger, agent), 0);
+        assertEq(topUps.previewTopUp(address(treasury), agent2), 0);
+    }
+
+    function test_topUp_capLoweredBelowTodaysTotal_blocksFurtherTopUps() public {
+        topUps.topUp(address(treasury), agent); // 100 today
+        _agentSpends(agent, 100e6);
+        _ownerCall(abi.encodeCall(TopUpExecutor.setRule, (agent, address(usdc), REFILL_TO, WHEN_BELOW, 50e6)));
+        assertEq(topUps.previewTopUp(address(treasury), agent), 0);
+        vm.expectRevert(abi.encodeWithSelector(ITopUpExecutor.NothingToTopUp.selector, address(treasury), agent));
+        topUps.topUp(address(treasury), agent);
+    }
+
     function test_topUp_onlyConfiguredAgents() public {
         vm.expectRevert(abi.encodeWithSelector(ITopUpExecutor.RuleNotFound.selector, address(treasury), agent2));
         topUps.topUp(address(treasury), agent2);

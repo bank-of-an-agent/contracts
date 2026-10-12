@@ -10,7 +10,13 @@ import {IAgentEscrow} from "../../src/interfaces/IAgentEscrow.sol";
 import {MockValidationRegistry} from "../../src/mocks/MockValidationRegistry.sol";
 import {GuardianPausable} from "../../src/utils/GuardianPausable.sol";
 import {TokenTransfer} from "../../src/utils/TokenTransfer.sol";
-import {CallbackToken, FalseReturnToken, FeeOnTransferToken, TestToken} from "../mocks/TestTokens.sol";
+import {
+    CallbackToken,
+    FalseReturnToken,
+    FeeOnTransferToken,
+    ReverseTransferToken,
+    TestToken
+} from "../mocks/TestTokens.sol";
 import {BaseTest} from "../utils/BaseTest.sol";
 
 contract AgentEscrowTest is BaseTest {
@@ -208,6 +214,14 @@ contract AgentEscrowTest is BaseTest {
         vm.expectRevert(abi.encodeWithSelector(TokenTransfer.TransferAmountMismatch.selector, address(fot), 1000, 990));
         escrow.lock(address(fot), payee, 1000, expiry, address(0), address(0), 0, 0, 0);
         vm.stopPrank();
+    }
+
+    function test_lock_rejectsTokenWhoseTransferShrinksReceiver() public {
+        ReverseTransferToken rev = new ReverseTransferToken();
+        rev.mint(address(escrow), 1000); // e.g. an earlier donation
+        vm.prank(payer);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfer.TransferAmountMismatch.selector, address(rev), 1000, 0));
+        escrow.lock(address(rev), payee, 1000, expiry, address(0), address(0), 0, 0, 0);
     }
 
     function test_lock_rejectsFalseReturningToken() public {
