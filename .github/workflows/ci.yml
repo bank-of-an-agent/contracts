@@ -1,0 +1,108 @@
+name: contracts-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in lockstep with the toolchain used to pin bytecode (see foundry.toml).
+  FOUNDRY_VERSION: v1.8.4
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - name: forge fmt --check
+        run: forge fmt --check
+
+  build:
+    name: Build, sizes, lint, ABI drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - name: Build with contract sizes (warnings are errors)
+        run: forge build --sizes --deny warnings --skip test --skip script
+      - name: Build tests and scripts
+        run: forge build --deny warnings
+      - name: Lint
+        run: forge lint
+      - name: ABIs are up to date
+        run: |
+          scripts/export-abis.sh
+          git diff --exit-code -- abis/ || { echo "::error::abis/ is stale: run scripts/export-abis.sh and commit"; exit 1; }
+
+  test:
+    name: Unit, fuzz and invariant tests (ci profile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FOUNDRY_PROFILE: ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - name: forge test (10k fuzz runs, 1k x 200 invariant runs)
+        run: forge test -vv
+
+  fork-spike:
+    name: Base Sepolia fork spike (x402 + Safe ERC-1271)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FOUNDRY_PROFILE: fork
+      # Public endpoint by default; set the repository secret to use a private RPC.
+      BASE_SEPOLIA_RPC_URL: ${{ secrets.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - name: forge test (fork profile, pinned block 47,990,000)
+        run: forge test -vv
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - name: forge coverage (src/ only)
+        run: forge coverage --report summary --report lcov --no-match-coverage '^(test|script)/'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: error
